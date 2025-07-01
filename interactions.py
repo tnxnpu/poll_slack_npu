@@ -2,12 +2,12 @@
 import asyncio
 
 from fastapi import APIRouter, Request
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import PlainTextResponse, Response, JSONResponse  # Import JSONResponse
 import json
 import httpx
 from db import polls
 from settings import SLACK_BOT_TOKEN
-from pymongo import ReturnDocument
+from bson.objectid import ObjectId
 
 interactions_router = APIRouter()
 
@@ -23,19 +23,28 @@ async def send_poll_to_slack(question, choices, channel, poll_id):
         "Content-Type": "application/json"
     }
 
+    # Fetch the poll from DB to get 'allow_multiple_votes' setting and creator_id
+    # This is needed here to conditionally display the notice and in handle_interactions for permission checks
+    poll_doc = polls.find_one({"_id": poll_id})
+    allow_multiple_votes = poll_doc.get("allow_multiple_votes", False) if poll_doc else False
+    creator_id_from_db = poll_doc.get("creator_id") if poll_doc else None
+
     blocks = [
         {
             "type": "section",
-            "text": {"type": "mrkdwn", "text": f"* {question}*"}
+            "text": {"type": "mrkdwn", "text": f"* {question}*"},
+            "accessory": {  # This overflow button is now always present for all viewers
+                "type": "overflow",
+                "options": [
+                    {
+                        "text": {"type": "plain_text", "text": "Settings", "emoji": True},
+                        "value": f"settings_{poll_id}"  # Pass poll_id for identification
+                    }
+                ],
+                "action_id": "open_poll_settings"
+            }
         }
     ]
-
-    # --- START OF CHANGED CODE (Added Debugging Prints) ---
-    # Fetch the poll from DB to get 'allow_multiple_votes' setting
-    poll_doc = polls.find_one({"_id": poll_id})
-    allow_multiple_votes = poll_doc.get("allow_multiple_votes", False) if poll_doc else False
-    creator_id = poll_doc.get("creator_id") if poll_doc else None  # Get creator ID for overflow button logic
-    print(f"send_poll_to_slack: Poll ID: {poll_id}, allow_multiple_votes: {allow_multiple_votes}")
 
     if allow_multiple_votes:
         blocks.append({
@@ -44,7 +53,6 @@ async def send_poll_to_slack(question, choices, channel, poll_id):
                 {"type": "mrkdwn", "text": "💡 _You may vote for multiple options_"}
             ]
         })
-    # --- END OF CHANGED CODE ---
 
     emoji_list = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
 
@@ -79,7 +87,8 @@ async def send_poll_to_slack(question, choices, channel, poll_id):
         if r.status_code == 200 and r.json().get("ok"):
             ts = r.json()["ts"]
             # Store the message timestamp (ts) and original creator ID in the database for future updates
-            polls.update_one({"_id": poll_id}, {"$set": {"message_ts": ts}})
+            polls.update_one({"_id": poll_id},
+                             {"$set": {"message_ts": ts, "creator_id": creator_id_from_db}})  # Ensure creator_id is set
 
 
 @interactions_router.post("/slack/interactions")
@@ -99,145 +108,334 @@ async def handle_interactions(request: Request):
     print(f"User ID: {data['user']['id']}")
     print(f"Channel ID: {data.get('channel', {}).get('id')}")
     print(f"Message TS: {data.get('message', {}).get('ts')}")
+    print(f"View ID: {data.get('view', {}).get('id')}")  # Added print for view_id
+    print(f"Callback ID: {data.get('view', {}).get('callback_id')}")  # Added print for callback_id
     print(f"------------------------------------")
 
-    # === Modal submitted (when a new poll is created) ===
+    # === Modal submitted (view_submission) ===
     if data["type"] == "view_submission":
-        view_state = data["view"]["state"]["values"]
-        question = view_state["question_block"]["question_input"]["value"]
-        choices_raw = view_state["choices_block"]["choices_input"]["value"]
-        channel = data["view"]["private_metadata"]  # Channel where the poll will be posted
-        creator_id = data["user"]["id"]  # User who created the poll
+        if data["view"]["callback_id"] == "submit_poll_modal":
+            view_state = data["view"]["state"]["values"]
+            question = view_state["question_block"]["question_input"]["value"]
+            choices_raw = view_state["choices_block"]["choices_input"]["value"]
+            channel = data["view"]["private_metadata"]  # Channel where the poll will be posted
+            creator_id = data["user"]["id"]  # User who created the poll
 
-        # Determine if multiple votes are allowed based on checkbox state (reverted to 'votes' naming)
-        allow_multiple_votes = False
-        if "multiple_votes_block" in view_state and \
-                "allow_multiple_votes_checkbox" in view_state["multiple_votes_block"] and \
-                view_state["multiple_votes_block"]["allow_multiple_votes_checkbox"].get("selected_options"):
-            allow_multiple_votes = True
+            # Determine if multiple votes are allowed based on checkbox state
+            allow_multiple_votes = False
+            if "multiple_votes_block" in view_state and \
+                    "allow_multiple_votes_checkbox" in view_state["multiple_votes_block"] and \
+                    view_state["multiple_votes_block"]["allow_multiple_votes_checkbox"].get("selected_options"):
+                allow_multiple_votes = True
 
-        # Clean and prepare choices
-        choices = [c.strip() for c in choices_raw.strip().split("\n") if c.strip()]
+            # Clean and prepare choices
+            choices = [c.strip() for c in choices_raw.strip().split("\n") if c.strip()]
 
-        # Prepare the poll document for MongoDB
-        poll_doc = {
-            "question": question,
-            "choices": choices,
-            "channel": channel,
-            "creator_id": creator_id,
-            "message_ts": None,  # Will be updated after the message is sent to Slack
-            "votes": {},  # Stores user_id: selected_choice pairs (single vote only now)
-            "allow_multiple_votes": allow_multiple_votes  # Store setting in DB (reverted field name)
-        }
+            # Prepare the poll document for MongoDB
+            poll_doc = {
+                "question": question,
+                "choices": choices,
+                "channel": channel,
+                "creator_id": creator_id,
+                "message_ts": None,  # Will be updated after the message is sent to Slack
+                "votes": {},  # Stores user_id: [selected_choices] pairs for multiple, or string for single
+                "allow_multiple_votes": allow_multiple_votes  # Store setting in DB
+            }
 
-        # Insert the new poll into the database
-        result = polls.insert_one(poll_doc)
-        poll_id = result.inserted_id
+            # Insert the new poll into the database
+            result = polls.insert_one(poll_doc)
+            poll_id = result.inserted_id
 
-        print(f"Poll inserted to DB: {poll_id}")
+            print(f"Poll inserted to DB: {poll_id}")
 
-        # Send the poll to Slack asynchronously
-        asyncio.create_task(send_poll_to_slack(question, choices, channel, poll_id))
-        return Response(status_code=200)
+            # Send the poll to Slack asynchronously
+            asyncio.create_task(send_poll_to_slack(question, choices, channel, poll_id))
+            return Response(status_code=200)  # Always acknowledge modal submission
+
+        # --- Removed delete_confirm_modal handling as it's no longer used ---
+        return Response(status_code=200)  # Acknowledge any other modal submission (e.g., close)
 
     # === Block actions (button clicks) ===
     elif data["type"] == "block_actions":
         user_id = data["user"]["id"]  # User who clicked the button
         action_id = data["actions"][0]["action_id"]  # Get the action_id to distinguish between vote and delete
 
-        message_ts = data["message"]["ts"]  # Timestamp of the poll message
-        channel = data["channel"]["id"]  # Channel where the interaction occurred
+        # Determine if this block_action originated from a message or a modal
+        is_from_message = "message" in data
+        is_from_modal = "view" in data and data["view"].get(
+            "callback_id") == "poll_settings_modal"  # Only check for settings modal now
 
-        # --- Removed Delete Poll Button Click Handling ---
-        # The logic for deleting a poll has been removed as per user request.
+        message_ts = None
+        channel = None
+        poll_id_from_modal_metadata = None
+
+        if is_from_message:
+            message_ts = data["message"].get("ts")
+            channel = data["channel"].get("id")
+        elif is_from_modal:
+            # If from modal, get poll_id from private_metadata
+            private_metadata = json.loads(data["view"]["private_metadata"])
+            poll_id_from_modal_metadata = ObjectId(private_metadata["poll_id"])
+            # We don't have message_ts or channel directly from modal action, need to fetch poll
+
+        # --- Handle Overflow Button Click (opens modal) ---
+        if action_id == "open_poll_settings":
+            # This action originates from a message, so message_ts and channel are available
+            if not message_ts or not channel:
+                print(f"Missing message_ts or channel for open_poll_settings action. Cannot proceed.")
+                return Response(status_code=200)
+
+            # Correctly extract poll_id from the value of the selected option
+            poll_id_str = data["actions"][0]["selected_option"]["value"].split("_")[1]
+            poll_id = ObjectId(poll_id_str)
+
+            # Fetch the poll to get creator_id for permission check and poll details for modal
+            poll_details = polls.find_one({"_id": poll_id})
+
+            if not poll_details:
+                print(f"Poll {poll_id} not found when trying to open settings.")
+                return Response(status_code=200)
+
+            if poll_details.get("creator_id") != user_id:
+                # User is NOT the creator, show informational modal
+                poll_info_modal = {
+                    "trigger_id": data["trigger_id"],
+                    "view": {
+                        "type": "modal",
+                        "callback_id": "poll_info_modal",
+                        "title": {"type": "plain_text", "text": "Poll Information"},
+                        "close": {"type": "plain_text", "text": "Close"},
+                        "blocks": [
+                            {
+                                "type": "section",
+                                "text": {"type": "mrkdwn", "text": f"*Question:* {poll_details.get('question', 'N/A')}"}
+                            },
+                            {
+                                "type": "context",
+                                "elements": [
+                                    {"type": "mrkdwn", "text": f"Created by <@{poll_details.get('creator_id', 'N/A')}>"}
+                                ]
+                            }
+                        ]
+                    }
+                }
+                headers = {
+                    "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                    "Content-Type": "application/json"
+                }
+                async with httpx.AsyncClient() as client:
+                    await client.post("https://slack.com/api/views.open", headers=headers, json=poll_info_modal)
+                print(f"User {user_id} is not creator. Opened poll info modal for poll {poll_id}.")
+                return Response(status_code=200)
+
+            settings_modal = {
+                "trigger_id": data["trigger_id"],
+                "view": {
+                    "type": "modal",
+                    "callback_id": "poll_settings_modal",
+                    "private_metadata": json.dumps({"poll_id": str(poll_id)}),
+                    "title": {"type": "plain_text", "text": "Polly Settings"},
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": "*Admin Controls*"},
+                            "block_id": "admin_controls_header"
+                        },
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn", "text": "Edit the content of this polly"},
+                            "accessory": {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "Edit poll", "emoji": True},
+                                "value": "edit_poll_content",
+                                "action_id": "edit_poll_content"
+                            },
+                            "block_id": "edit_poll_section"
+                        },
+                        {
+                            "type": "section",
+                            "text": {"type": "mrkdwn",
+                                     "text": "Permanently delete this polly and remove all its messages in Slack"},
+                            "accessory": {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "Delete", "emoji": True},
+                                "style": "danger",
+                                "value": "delete_poll_from_settings",
+                                "action_id": "delete_poll_from_settings"
+                            },
+                            "block_id": "delete_poll_section"
+                        }
+                    ]
+                }
+            }
+
+            headers = {
+                "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            async with httpx.AsyncClient() as client:
+                await client.post("https://slack.com/api/views.open", headers=headers, json=settings_modal)
+            return Response(status_code=200)
+
+        # --- Handle Delete Poll Button Click from Settings Modal (direct deletion) ---
+        elif action_id == "delete_poll_from_settings":
+            # Ensure this action came from a modal
+            if not is_from_modal:
+                print(f"Action '{action_id}' not from modal as expected. Cannot proceed.")
+                return Response(status_code=200)
+
+            if not poll_id_from_modal_metadata:
+                print(f"Missing poll_id in modal metadata for delete_poll_from_settings action. Cannot proceed.")
+                return Response(status_code=200)
+
+            poll = polls.find_one({"_id": poll_id_from_modal_metadata})
+            if not poll or poll.get("creator_id") != user_id:
+                print(
+                    f"User {user_id} tried to delete poll {poll_id_from_modal_metadata} but is not the creator or poll not found.")
+                # If not authorized or poll not found, just acknowledge the interaction without closing the modal
+                return Response(status_code=200)
+
+            message_ts = poll["message_ts"]
+            channel = poll["channel"]
+            print(
+                f"Attempting to delete poll {poll_id_from_modal_metadata} by {user_id} in channel {channel} with ts {message_ts}")
+            headers = {
+                "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            try:
+                async with httpx.AsyncClient() as client:
+                    delete_response = await client.post("https://slack.com/api/chat.delete", headers=headers, json={
+                        "channel": channel,
+                        "ts": message_ts
+                    })
+                    if delete_response.status_code == 200 and delete_response.json().get("ok"):
+                        polls.delete_one({"_id": poll["_id"]})
+                        print(f"Poll message {message_ts} deleted from Slack and DB.")
+                        # IMPORTANT: Return this response ONLY on success to close the modal
+                        return JSONResponse(content={"response_action": "clear"})
+                    else:
+                        print(f"Failed to delete Slack message: {delete_response.text}")
+                        # If Slack deletion fails, we should still acknowledge the interaction,
+                        # but the modal won't close automatically via "clear".
+                        # You could optionally update the modal to show an error message here.
+                        return Response(status_code=200) # Keep the modal open or show an error
+            except httpx.RequestError as e:
+                print(f"HTTP request failed during poll deletion: {e}")
+                # Handle network errors during the API call
+                return Response(status_code=200) # Keep the modal open
+
+        # --- Removed confirm_delete_poll and cancel_delete_poll handlers as no confirmation modal ---
+
+        # --- Handle Edit Poll Button Click from Settings Modal ---
+        elif action_id == "edit_poll_content":
+            # This action comes from a modal, so poll_id is in private_metadata
+            if not poll_id_from_modal_metadata:
+                print(f"Missing poll_id in modal metadata for edit_poll_content action. Cannot proceed.")
+                return Response(status_code=200)
+
+            poll = polls.find_one({"_id": poll_id_from_modal_metadata})
+            if not poll or poll.get("creator_id") != user_id:
+                print(
+                    f"User {user_id} tried to edit poll {poll_id_from_modal_metadata} but is not the creator or poll not found.")
+                return Response(status_code=200)
+
+            print(f"User {user_id} clicked Edit Poll for poll {poll_id_from_modal_metadata}.")
+            # Actual "Edit Poll" modal opening/logic would go here
+            return Response(status_code=200)
+
 
         # --- Handle Vote Button Click ---
-        if action_id.startswith("vote_option_"):  # This catches all vote buttons
-            selected_choice = data["actions"][0]["value"]  # The choice they selected (actual choice text)
+        elif action_id.startswith("vote_option_"):  # This catches all vote buttons
+            # This action originates from a message, so message_ts and channel are available
+            if not message_ts or not channel:
+                print(f"Missing message_ts or channel for vote_option action. Cannot proceed.")
+                return Response(status_code=200)
+
+            selected_choice = data["actions"][0]["value"]
 
             # Find the poll in the database using message_ts and channel
-            poll = polls.find_one({"message_ts": message_ts, "channel": channel})
+            poll_query_result = polls.find_one({"message_ts": message_ts, "channel": channel})
 
-            if poll:
-                allow_multiple = poll.get("allow_multiple_votes", False)  # Reverted field name
-                current_user_votes_from_db = poll.get("votes", {}).get(user_id,
-                                                                       None)  # Get current vote, default to None
+            if poll_query_result:
+                allow_multiple = poll_query_result.get("allow_multiple_votes", False)
+                creator_id_from_db = poll_query_result.get("creator_id")
+                current_user_votes_from_db = poll_query_result.get("votes", {}).get(user_id, None)
 
                 if allow_multiple:
-                    # In multiple vote mode, current_user_votes_from_db is expected to be a list
-                    # Ensure it's a list even if it was unset or never set
                     current_user_votes_list = current_user_votes_from_db if isinstance(current_user_votes_from_db,
                                                                                        list) else []
-
                     if selected_choice in current_user_votes_list:
-                        # If already voted for this, remove it (unvote for this specific option)
                         polls.update_one(
-                            {"_id": poll["_id"]},
+                            {"_id": poll_query_result["_id"]},
                             {"$pull": {f"votes.{user_id}": selected_choice}}
                         )
-                        print(f"Removed vote for {user_id} from {selected_choice} (multiple votes mode)")
                     else:
-                        # Add this choice to the user's array of votes
                         polls.update_one(
-                            {"_id": poll["_id"]},
-                            {"$addToSet": {f"votes.{user_id}": selected_choice}}  # $addToSet prevents duplicates
+                            {"_id": poll_query_result["_id"]},
+                            {"$addToSet": {f"votes.{user_id}": selected_choice}}
                         )
-                        print(f"Added vote for {user_id} to {selected_choice} (multiple votes mode)")
-                else:  # Single vote mode
-                    # current_user_votes_from_db is a string (the chosen option) or None
+                else:
                     if current_user_votes_from_db == selected_choice:
-                        # User clicked the same vote button again in single-vote mode, so remove their vote
                         polls.update_one(
-                            {"_id": poll["_id"]},
-                            {"$unset": {f"votes.{user_id}": ""}}  # $unset removes the field
+                            {"_id": poll_query_result["_id"]},
+                            {"$unset": {f"votes.{user_id}": ""}}
                         )
-                        print(f"Removed vote for {user_id} on {selected_choice} (single mode)")
                     else:
-                        # User voted for the first time or changed their vote in single-vote mode
-                        # Replace any existing votes with the new one
                         polls.update_one(
-                            {"_id": poll["_id"]},
-                            {"$set": {f"votes.{user_id}": selected_choice}}  # Store as a string
+                            {"_id": poll_query_result["_id"]},
+                            {"$set": {f"votes.{user_id}": selected_choice}}
+
                         )
-                        print(f"Set/Updated vote for {user_id} to {selected_choice} (single mode)")
 
-                # Get the updated votes for displaying the poll results
-                # Fetch the poll again to get the latest state including the updated vote
-                poll = polls.find_one({"message_ts": message_ts, "channel": channel})
+                # Re-fetch the poll after update to get the latest state
+                poll_updated = polls.find_one({"_id": poll_query_result["_id"]})
 
-                all_votes_flat = {}  # To count total votes per choice
-                unique_voters = set()  # To count total unique respondents correctly
-                total_individual_votes_cast = 0  # To count total individual votes for percentage base
+                all_votes_flat = {}
+                unique_voters = set()
+                total_individual_votes_cast = 0
 
-                for uid, user_vote_data in poll.get("votes", {}).items():
-                    if user_vote_data:  # Only count if the user actually has a vote (not unset/empty)
-                        unique_voters.add(uid)  # Add user to unique voters set
-
-                        if isinstance(user_vote_data, list):  # Multiple votes scenario
+                for uid, user_vote_data in poll_updated.get("votes", {}).items():
+                    if user_vote_data:
+                        unique_voters.add(uid)
+                        if isinstance(user_vote_data, list):
                             for choice_item in user_vote_data:
                                 all_votes_flat.setdefault(choice_item, []).append(uid)
-                                total_individual_votes_cast += 1  # Increment for each individual vote
-                        else:  # Single vote scenario (user_vote_data is a string)
+                                total_individual_votes_cast += 1
+                        else:
                             all_votes_flat.setdefault(user_vote_data, []).append(uid)
-                            total_individual_votes_cast += 1  # Increment for single vote
+                            total_individual_votes_cast += 1
 
-                total_respondents = len(unique_voters)  # Correctly define total_respondents here
+                total_respondents = len(unique_voters)
                 display_total_votes_count = total_individual_votes_cast
 
-                choices = poll["choices"]
-                question = poll["question"]
-                creator_id = poll.get("creator_id", "unknown")
+                choices = poll_updated["choices"]
+                question = poll_updated["question"]
+                creator_id = poll_updated.get("creator_id", "unknown")
 
-                emoji_list = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+                emoji_list = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "�"]
 
-                # Reconstruct the Slack blocks to update the message
-                # Start with the question
                 blocks = [
-                    {"type": "section", "text": {"type": "mrkdwn", "text": f"*{question}*"}}
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"*{question}*"}
+                    }
                 ]
 
-                # Add "You may vote for multiple options" notice if allow_multiple_votes is True
-                if allow_multiple:  # Use the 'allow_multiple' variable derived from poll settings
+                # Add overflow button ONLY if the current user is the creator
+                if user_id == creator_id_from_db:
+                    blocks[0]["accessory"] = {
+                        "type": "overflow",
+                        "options": [
+                            {
+                                "text": {"type": "plain_text", "text": "Settings", "emoji": True},
+                                "value": f"settings_{poll_updated['_id']}"
+                            }
+                        ],
+                        "action_id": "open_poll_settings"
+                    }
+
+                if allow_multiple:
                     blocks.append({
                         "type": "context",
                         "elements": [
@@ -245,22 +443,14 @@ async def handle_interactions(request: Request):
                         ]
                     })
 
-                # Add the updated results for each choice, including the button
                 for i, choice in enumerate(choices):
                     current_emoji = emoji_list[i] if i < len(emoji_list) else "🔘"
                     user_ids_for_this_choice = all_votes_flat.get(choice, [])
                     vote_count = len(user_ids_for_this_choice)
 
-                    # Calculate percentage for display
-                    # Use total_individual_votes_cast for percentage base if multiple votes are allowed
-                    if allow_multiple:
-                        percentage_base = total_individual_votes_cast
-                    else:  # Single vote mode
-                        percentage_base = total_respondents  # total unique users
-
+                    percentage_base = total_individual_votes_cast if allow_multiple else total_respondents
                     percentage = (vote_count / percentage_base * 100) if percentage_base > 0 else 0
 
-                    # Format the mention text with spaces instead of newlines
                     mention_text = " ".join(
                         f"<@{uid}>" for uid in user_ids_for_this_choice) if user_ids_for_this_choice else ""
 
@@ -272,16 +462,14 @@ async def handle_interactions(request: Request):
                         },
                         "accessory": {
                             "type": "button",
-                            "text": {"type": "plain_text", "text": current_emoji},  # Button with emoji
+                            "text": {"type": "plain_text", "text": current_emoji},
                             "value": choice,
                             "action_id": f"vote_option_{i}"
                         }
                     })
 
-                # Add context information at the bottom (Total votes and Created by)
                 context_elements_bottom = [
                     {"type": "mrkdwn", "text": f"*Total votes:* {display_total_votes_count}"},
-                    # Changed label and used new variable
                     {"type": "mrkdwn", "text": f"Created by <@{creator_id}>"}
                 ]
 
@@ -297,7 +485,6 @@ async def handle_interactions(request: Request):
                     "Content-Type": "application/json"
                 }
 
-                # Update the Slack message with the new vote count
                 async with httpx.AsyncClient() as client:
                     update_response = await client.post("https://slack.com/api/chat.update", headers=headers, json={
                         "channel": channel,
@@ -308,7 +495,7 @@ async def handle_interactions(request: Request):
                 print(f"Slack chat.update response status: {update_response.status_code}")
                 print(f"Slack chat.update response text: {update_response.text}")
 
-            return Response(status_code=200)  # Ensure a 200 OK is always returned for handled actions
+            return Response(status_code=200)
 
     print(f"--- Unhandled Interaction Type: {data['type']} ---")
-    return Response(status_code=200)  # Always return 200 to Slack for unhandled actions
+    return Response(status_code=200)
