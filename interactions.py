@@ -423,17 +423,16 @@ async def handle_interactions(request: Request):
                 ]
 
                 # Add overflow button ONLY if the current user is the creator
-                if user_id == creator_id_from_db:
-                    blocks[0]["accessory"] = {
-                        "type": "overflow",
-                        "options": [
-                            {
-                                "text": {"type": "plain_text", "text": "Settings", "emoji": True},
-                                "value": f"settings_{poll_updated['_id']}"
-                            }
-                        ],
-                        "action_id": "open_poll_settings"
-                    }
+                blocks[0]["accessory"] = {
+                    "type": "overflow",
+                    "options": [
+                        {
+                            "text": {"type": "plain_text", "text": "Settings", "emoji": True},
+                            "value": f"settings_{poll_updated['_id']}"
+                        }
+                    ],
+                    "action_id": "open_poll_settings"
+                }
 
                 if allow_multiple:
                     blocks.append({
