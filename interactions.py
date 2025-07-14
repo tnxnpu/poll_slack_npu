@@ -313,7 +313,26 @@ async def handle_interactions(request: Request):
                         polls.delete_one({"_id": poll["_id"]})
                         print(f"Poll message {message_ts} deleted from Slack and DB.")
                         # IMPORTANT: Return this response ONLY on success to close the modal
-                        return JSONResponse(content={"response_action": "clear"})
+
+                        await client.post(
+                            "https://slack.com/api/views.update", headers=headers, json=
+                            {
+                                "view_id": data["container"]["view_id"],  # current modal
+                                "hash": data["view"]["hash"],  # guard against races
+                                "view": {
+                                    "type": "modal",
+                                    "title": {"type": "plain_text", "text": "Deleted"},
+                                    "close": {"type": "plain_text", "text": "Close"},
+                                    "blocks": [
+                                        {
+                                            "type": "section",
+                                            "text": {"type": "plain_text", "text": "Poll deleted successfully."},
+                                            "block_id": "success_message"
+                                        }
+                                    ]
+                                },
+                            }
+                        )
                     else:
                         print(f"Failed to delete Slack message: {delete_response.text}")
                         # If Slack deletion fails, we should still acknowledge the interaction,
