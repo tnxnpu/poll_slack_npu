@@ -75,7 +75,7 @@ async def update_slack_poll_message(poll_id: ObjectId, client: httpx.AsyncClient
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn",
-                     "text": f"{current_emoji} *{choice_text}*       | {percentage:.0f}%  `{vote_count}`\n{mention_text}"},
+                     "text": f"{current_emoji} *{choice_text}* | *{percentage:.0f}%* `{vote_count}`\n{mention_text}"},
             "accessory": {
                 "type": "button",
                 "text": {"type": "plain_text", "text": current_emoji},
@@ -232,6 +232,12 @@ async def handle_interactions(request: Request):
             new_question = view_state["question_block"]["question_input"]["value"]
             new_choices_text = extract_choices_from_state(view_state)
 
+            # --- Handle checkbox settings from edit modal ---
+            selected_options = view_state.get("settings_block", {}).get("settings_checkboxes", {}).get(
+                "selected_options", [])
+            selected_values = {opt['value'] for opt in selected_options}
+            allow_others_to_add_options = 'allow_others_to_add' in selected_values
+
             old_choices_data = poll.get("choices", [])
             new_choices_data = []
             for i, new_text in enumerate(new_choices_text):
@@ -241,7 +247,14 @@ async def handle_interactions(request: Request):
                 else:
                     new_choices_data.append({"text": new_text, "voters": []})
 
-            polls.update_one({"_id": poll_id}, {"$set": {"question": new_question, "choices": new_choices_data}})
+            polls.update_one(
+                {"_id": poll_id},
+                {"$set": {
+                    "question": new_question,
+                    "choices": new_choices_data,
+                    "allow_others_to_add_options": allow_others_to_add_options
+                }}
+            )
             async with httpx.AsyncClient() as client:
                 await update_slack_poll_message(poll_id, client)
             return Response(status_code=200)
@@ -472,6 +485,30 @@ async def handle_interactions(request: Request):
                 "elements": [{"type": "button", "text": {"type": "plain_text", "text": "Add another option"},
                               "action_id": "add_option_to_modal"}]
             })
+
+            # --- Add settings block with initial value ---
+            initial_settings = []
+            if poll.get("allow_others_to_add_options"):
+                initial_settings.append({
+                    "text": {"type": "plain_text", "text": "Allow others to add options"},
+                    "value": "allow_others_to_add"
+                })
+
+            settings_block = {
+                "type": "input", "block_id": "settings_block", "optional": True,
+                "label": {"type": "plain_text", "text": "Settings"},
+                "element": {
+                    "type": "checkboxes", "action_id": "settings_checkboxes",
+                    "options": [{
+                        "text": {"type": "plain_text", "text": "Allow others to add options"},
+                        "value": "allow_others_to_add"
+                    }]
+                }
+            }
+            if initial_settings:
+                settings_block["element"]["initial_options"] = initial_settings
+
+            edit_blocks.append(settings_block)
 
             edit_modal_view = {
                 "type": "modal", "callback_id": "submit_edit_poll_modal",
