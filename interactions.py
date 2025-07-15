@@ -4,13 +4,88 @@ import json
 
 import httpx
 from bson.objectid import ObjectId
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Form
 from fastapi.responses import JSONResponse, Response
 
 from db import polls
 from settings import SLACK_BOT_TOKEN
 
 interactions_router = APIRouter()
+
+
+# --- NEW: Command handler for the initial /poll command ---
+@interactions_router.post("/slack/commands/poll")
+async def create_poll_modal(channel_id: str = Form(...), trigger_id: str = Form(...)):
+    """
+    Handles the initial `/poll` slash command and opens the poll creation modal.
+    """
+    headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"}
+
+    # This is the new, dynamic modal structure
+    initial_modal_view = {
+        "type": "modal",
+        "callback_id": "submit_poll_modal",
+        "private_metadata": channel_id,
+        "title": {"type": "plain_text", "text": "Create a Poll"},
+        "submit": {"type": "plain_text", "text": "Create"},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            {
+                "type": "input",
+                "block_id": "question_block",
+                "label": {"type": "plain_text", "text": "Poll Question"},
+                "element": {"type": "plain_text_input", "action_id": "question_input",
+                            "placeholder": {"type": "plain_text", "text": "What do you want to ask?"}}
+            },
+            {
+                "type": "input",
+                "block_id": "choice_block_0",
+                "label": {"type": "plain_text", "text": "Option 1"},
+                "element": {"type": "plain_text_input", "action_id": "choice_input_0"}
+            },
+            {
+                "type": "input",
+                "block_id": "choice_block_1",
+                "label": {"type": "plain_text", "text": "Option 2 (optional)"},
+                "element": {"type": "plain_text_input", "action_id": "choice_input_1"}
+            },
+            {
+                "type": "actions",
+                "block_id": "add_option_section",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Add another option"},
+                        "action_id": "add_option_to_modal"
+                    }
+                ]
+            },
+            {
+                "type": "input",
+                "block_id": "settings_block",
+                "optional": True,
+                "label": {"type": "plain_text", "text": "Settings (optional)"},
+                "element": {
+                    "type": "checkboxes",
+                    "action_id": "allow_multiple_votes_checkbox",
+                    "options": [
+                        {
+                            "text": {"type": "plain_text", "text": "Allow multiple votes"},
+                            "value": "allow_multiple"
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+    async with httpx.AsyncClient() as client:
+        await client.post("https://slack.com/api/views.open", headers=headers, json={
+            "trigger_id": trigger_id,
+            "view": initial_modal_view
+        })
+
+    return Response(status_code=200)
 
 
 async def update_slack_poll_message(poll_id: ObjectId, client: httpx.AsyncClient):
@@ -146,7 +221,7 @@ async def send_poll_to_slack(question, choices_data, channel, poll_id):
 
 @interactions_router.post("/slack/interactions")
 async def handle_interactions(request: Request):
-    """Handles all incoming Slack interactions with the new data structure."""
+    """Handles all incoming Slack interactions, including dynamic modal updates."""
     payload = await request.form()
     data = json.loads(payload.get("payload"))
     interaction_type = data["type"]
@@ -156,16 +231,29 @@ async def handle_interactions(request: Request):
         callback_id = data["view"]["callback_id"]
         view_state = data["view"]["state"]["values"]
 
+        # --- Helper function to extract choices from dynamic inputs ---
+        def extract_choices_from_state(state):
+            choices = []
+            # Sort by block_id to maintain order
+            sorted_blocks = sorted(state.items(), key=lambda item: item[0])
+            for block_id, block_data in sorted_blocks:
+                if block_id.startswith("choice_block_"):
+                    # The action_id within the block holds the value
+                    action_id = list(block_data.keys())[0]
+                    choice_text = block_data[action_id].get("value")
+                    if choice_text:
+                        choices.append(choice_text.strip())
+            return choices
+
         if callback_id == "submit_poll_modal":
             question = view_state["question_block"]["question_input"]["value"]
-            choices_raw = view_state["choices_block"]["choices_input"]["value"]
+            choices_text = extract_choices_from_state(view_state)
+
             channel = data["view"]["private_metadata"]
             allow_multiple_votes = bool(
-                view_state.get("multiple_votes_block", {}).get("allow_multiple_votes_checkbox", {}).get(
-                    "selected_options"))
+                view_state.get("settings_block", {}).get("allow_multiple_votes_checkbox", {}).get("selected_options"))
 
-            # Create choices with the new structure: [{"text": "Choice 1", "voters": []}, ...]
-            choices = [{"text": c.strip(), "voters": []} for c in choices_raw.strip().split("\n") if c.strip()]
+            choices = [{"text": text, "voters": []} for text in choices_text]
 
             poll_doc = {
                 "question": question, "choices": choices, "channel": channel,
@@ -183,22 +271,19 @@ async def handle_interactions(request: Request):
 
             if not poll or poll.get("creator_id") != user_id:
                 return JSONResponse(
-                    content={"response_action": "errors", "errors": {"edit_question_block": "You are not authorized."}})
+                    content={"response_action": "errors", "errors": {"question_block": "You are not authorized."}})
 
-            new_question = view_state["edit_question_block"]["edit_question_input"]["value"]
-            new_choices_raw = view_state["edit_choices_block"]["edit_choices_input"]["value"]
-            new_choices_text = [c.strip() for c in new_choices_raw.strip().split("\n") if c.strip()]
-            vote_handling = view_state["vote_handling_block"]["vote_handling_select"]["selected_option"]["value"]
+            new_question = view_state["question_block"]["question_input"]["value"]
+            new_choices_text = extract_choices_from_state(view_state)
 
+            old_choices_data = poll.get("choices", [])
             new_choices_data = []
-            if vote_handling == "reset_votes":
-                new_choices_data = [{"text": text, "voters": []} for text in new_choices_text]
-            elif vote_handling == "keep_votes":
-                # Create a map of old choice text to its voters
-                old_voters_map = {choice["text"]: choice["voters"] for choice in poll.get("choices", [])}
-                for text in new_choices_text:
-                    # Keep voters if the choice text existed before, otherwise start fresh
-                    new_choices_data.append({"text": text, "voters": old_voters_map.get(text, [])})
+            for i, new_text in enumerate(new_choices_text):
+                if i < len(old_choices_data):
+                    voters = old_choices_data[i].get("voters", [])
+                    new_choices_data.append({"text": new_text, "voters": voters})
+                else:
+                    new_choices_data.append({"text": new_text, "voters": []})
 
             polls.update_one({"_id": poll_id}, {"$set": {"question": new_question, "choices": new_choices_data}})
             async with httpx.AsyncClient() as client:
@@ -209,6 +294,49 @@ async def handle_interactions(request: Request):
         action = data["actions"][0]
         action_id = action["action_id"]
 
+        # --- Handle adding a new option to a poll creation/edit modal ---
+        if action_id == "add_option_to_modal":
+            view = data["view"]
+            blocks = view["blocks"]
+
+            # Count existing choice inputs to determine the next index
+            choice_count = sum(1 for b in blocks if b.get("block_id", "").startswith("choice_block_"))
+            new_option_num = choice_count + 1
+
+            new_input_block = {
+                "type": "input",
+                "block_id": f"choice_block_{choice_count}",
+                "label": {"type": "plain_text", "text": f"Option {new_option_num}"},
+                "element": {"type": "plain_text_input", "action_id": f"choice_input_{choice_count}"}
+            }
+
+            # Find the position of the "Add another option" button to insert the new block before it
+            insert_pos = -1
+            for i, block in enumerate(blocks):
+                if block.get("block_id") == "add_option_section":
+                    insert_pos = i
+                    break
+
+            if insert_pos != -1:
+                blocks.insert(insert_pos, new_input_block)
+
+            headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"}
+            async with httpx.AsyncClient() as client:
+                await client.post("https://slack.com/api/views.update", headers=headers, json={
+                    "view_id": view["id"],
+                    "hash": view["hash"],
+                    "view": {
+                        "type": "modal",
+                        "callback_id": view["callback_id"],
+                        "private_metadata": view["private_metadata"],
+                        "title": view["title"],
+                        "submit": view["submit"],
+                        "close": view["close"],
+                        "blocks": blocks
+                    }
+                })
+            return Response(status_code=200)
+
         if action_id.startswith("vote_option_"):
             message_ts = data["message"]["ts"]
             channel_id = data["channel"]["id"]
@@ -218,31 +346,31 @@ async def handle_interactions(request: Request):
             if poll:
                 allow_multiple = poll.get("allow_multiple_votes", False)
 
-                if allow_multiple:
-                    # Check if user already voted for this specific option
-                    already_voted = False
+                if not allow_multiple:
+                    # If single-vote, first check if the user is un-voting the currently selected option
+                    is_unvoting = False
                     for choice in poll.get("choices", []):
                         if choice.get("text") == selected_choice_text and user_id in choice.get("voters", []):
-                            already_voted = True
+                            is_unvoting = True
                             break
 
+                    # Pull the user from all choices first
+                    polls.update_one({"_id": poll["_id"]}, {"$pull": {"choices.$[].voters": user_id}})
+
+                    # If they were not un-voting, push their vote to the new choice
+                    if not is_unvoting:
+                        polls.update_one({"_id": poll["_id"], "choices.text": selected_choice_text},
+                                         {"$push": {"choices.$.voters": user_id}})
+                else:  # Multi-vote logic
+                    already_voted = any(
+                        c.get("text") == selected_choice_text and user_id in c.get("voters", []) for c in
+                        poll.get("choices", []))
                     if already_voted:
-                        # Pull the vote
                         polls.update_one({"_id": poll["_id"], "choices.text": selected_choice_text},
                                          {"$pull": {"choices.$.voters": user_id}})
                     else:
-                        # Add the vote
                         polls.update_one({"_id": poll["_id"], "choices.text": selected_choice_text},
                                          {"$addToSet": {"choices.$.voters": user_id}})
-                else:  # Single vote logic
-                    # First, pull the user from any choice they might have voted for
-                    polls.update_one({"_id": poll["_id"]}, {"$pull": {"choices.$[].voters": user_id}})
-                    # Then, add their vote to the new choice, unless they are un-voting
-                    voted_for_this_before = any(
-                        c['text'] == selected_choice_text and user_id in c['voters'] for c in poll.get('choices', []))
-                    if not voted_for_this_before:
-                        polls.update_one({"_id": poll["_id"], "choices.text": selected_choice_text},
-                                         {"$push": {"choices.$.voters": user_id}})
 
                 async with httpx.AsyncClient() as client:
                     await update_slack_poll_message(poll["_id"], client)
@@ -292,38 +420,34 @@ async def handle_interactions(request: Request):
             poll = polls.find_one({"_id": poll_id})
             if not poll or poll.get("creator_id") != user_id: return Response(status_code=200)
 
-            choices_str = "\n".join([c.get("text", "") for c in poll.get("choices", [])])
+            # --- Build the dynamic edit modal ---
+            edit_blocks = [
+                {"type": "input", "block_id": "question_block",
+                 "label": {"type": "plain_text", "text": "Poll Question"},
+                 "element": {"type": "plain_text_input", "action_id": "question_input",
+                             "initial_value": poll.get("question", "")}}
+            ]
+            for i, choice in enumerate(poll.get("choices", [])):
+                edit_blocks.append({
+                    "type": "input", "block_id": f"choice_block_{i}",
+                    "label": {"type": "plain_text", "text": f"Option {i + 1}"},
+                    "element": {"type": "plain_text_input", "action_id": f"choice_input_{i}",
+                                "initial_value": choice.get("text", "")}
+                })
+
+            edit_blocks.append({
+                "type": "actions", "block_id": "add_option_section",
+                "elements": [{"type": "button", "text": {"type": "plain_text", "text": "Add another option"},
+                              "action_id": "add_option_to_modal"}]
+            })
+
             edit_modal_view = {
                 "type": "modal", "callback_id": "submit_edit_poll_modal",
                 "private_metadata": json.dumps({"poll_id": str(poll_id)}),
                 "title": {"type": "plain_text", "text": "Edit Poll"},
                 "submit": {"type": "plain_text", "text": "Save"},
                 "close": {"type": "plain_text", "text": "Cancel"},
-                "blocks": [
-                    {"type": "input", "block_id": "edit_question_block",
-                     "label": {"type": "plain_text", "text": "Poll Question"},
-                     "element": {"type": "plain_text_input", "action_id": "edit_question_input",
-                                 "initial_value": poll.get("question", "")}},
-                    {"type": "input", "block_id": "edit_choices_block",
-                     "label": {"type": "plain_text", "text": "Choices (one per line)"},
-                     "element": {"type": "plain_text_input", "action_id": "edit_choices_input", "multiline": True,
-                                 "initial_value": choices_str}},
-                    {"type": "input", "block_id": "vote_handling_block",
-                     "label": {"type": "plain_text", "text": "When saving, what should happen to votes?"},
-                     "element": {
-                         "type": "static_select", "action_id": "vote_handling_select",
-                         "initial_option": {"text": {"type": "plain_text", "text": "Reset all votes (recommended)"},
-                                            "value": "reset_votes"},
-                         "options": [
-                             {"text": {"type": "plain_text", "text": "Reset all votes (recommended)"},
-                              "value": "reset_votes"},
-                             {"text": {"type": "plain_text", "text": "Keep votes for matching choices"},
-                              "value": "keep_votes"}
-                         ]
-                     }},
-                    {"type": "context",
-                     "elements": [{"type": "mrkdwn", "text": "⚠️ Keeping votes is only for minor text corrections."}]}
-                ]
+                "blocks": edit_blocks
             }
             headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"}
             async with httpx.AsyncClient() as client:
