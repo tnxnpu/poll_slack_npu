@@ -445,6 +445,13 @@ async def handle_interactions(request: Request):
                     "private_metadata": json.dumps({"poll_id": str(poll_id)}),
                     "title": {"type": "plain_text", "text": "Poll Settings"},
                     "blocks": [
+                        {"type": "section",
+                         "text": {"type": "mrkdwn", "text": f"*Question:* {poll.get('question', 'N/A')}"}},
+                        {"type": "context",
+                         "elements": [{"type": "mrkdwn", "text": f"Created by <@{poll.get('creator_id', 'N/A')}>"}]},
+                        {"type": "divider"},
+                        {"type": "section",
+                         "text": {"type": "mrkdwn", "text": "*Admin controls*"}},
                         {"type": "section", "text": {"type": "mrkdwn", "text": "Edit the content of this poll."},
                          "accessory": {"type": "button",
                                        "text": {"type": "plain_text", "text": "Edit Poll", "emoji": True},
