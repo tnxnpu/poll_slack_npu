@@ -13,6 +13,12 @@ from db import polls
 app = FastAPI()
 app.include_router(interactions_router)
 
+
+@app.get("/healthz")
+def health_check():
+    """A simple endpoint for Render's health check."""
+    return {"status": "ok"}
+
 @app.post("/slack/commands")
 async def open_poll_modal(request: Request):
     """
