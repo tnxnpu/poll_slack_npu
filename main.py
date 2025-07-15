@@ -1,4 +1,6 @@
-﻿from fastapi import FastAPI, Request
+﻿# main.py
+
+from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse, Response
 import httpx
 from interactions import interactions_router
@@ -68,11 +70,15 @@ async def open_poll_modal(request: Request):
                     "label": {"type": "plain_text", "text": "Settings"},
                     "element": {
                         "type": "checkboxes",
-                        "action_id": "allow_multiple_votes_checkbox",
+                        "action_id": "settings_checkboxes", # Renamed for clarity
                         "options": [
                             {
                                 "text": {"type": "plain_text", "text": "Allow multiple votes"},
                                 "value": "allow_multiple"
+                            },
+                            {
+                                "text": {"type": "plain_text", "text": "Allow others to add options"},
+                                "value": "allow_others_to_add"
                             }
                         ]
                     }
@@ -90,4 +96,4 @@ async def open_poll_modal(request: Request):
     async with httpx.AsyncClient() as client:
         await client.post("https://slack.com/api/views.open", headers=headers, json=modal)
 
-    return PlainTextResponse("OK") # Slack expects a 200 OK response quickly
+    return Response(status_code=200) # Slack expects a 200 OK response quickly
