@@ -46,7 +46,8 @@ async def open_poll_modal(request: Request):
                 {
                     "type": "input",
                     "block_id": "choice_block_1",
-                    "label": {"type": "plain_text", "text": "Option 2 (optional)"},
+                    "optional": True,
+                    "label": {"type": "plain_text", "text": "Option 2"},
                     "element": {"type": "plain_text_input", "action_id": "choice_input_1"}
                 },
                 {
@@ -64,7 +65,7 @@ async def open_poll_modal(request: Request):
                     "type": "input",
                     "block_id": "settings_block",
                     "optional": True,
-                    "label": {"type": "plain_text", "text": "Settings (optional)"},
+                    "label": {"type": "plain_text", "text": "Settings"},
                     "element": {
                         "type": "checkboxes",
                         "action_id": "allow_multiple_votes_checkbox",

@@ -4,88 +4,13 @@ import json
 
 import httpx
 from bson.objectid import ObjectId
-from fastapi import APIRouter, Request, Form
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
 from db import polls
 from settings import SLACK_BOT_TOKEN
 
 interactions_router = APIRouter()
-
-
-# --- NEW: Command handler for the initial /poll command ---
-@interactions_router.post("/slack/commands/poll")
-async def create_poll_modal(channel_id: str = Form(...), trigger_id: str = Form(...)):
-    """
-    Handles the initial `/poll` slash command and opens the poll creation modal.
-    """
-    headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"}
-
-    # This is the new, dynamic modal structure
-    initial_modal_view = {
-        "type": "modal",
-        "callback_id": "submit_poll_modal",
-        "private_metadata": channel_id,
-        "title": {"type": "plain_text", "text": "Create a Poll"},
-        "submit": {"type": "plain_text", "text": "Create"},
-        "close": {"type": "plain_text", "text": "Cancel"},
-        "blocks": [
-            {
-                "type": "input",
-                "block_id": "question_block",
-                "label": {"type": "plain_text", "text": "Poll Question"},
-                "element": {"type": "plain_text_input", "action_id": "question_input",
-                            "placeholder": {"type": "plain_text", "text": "What do you want to ask?"}}
-            },
-            {
-                "type": "input",
-                "block_id": "choice_block_0",
-                "label": {"type": "plain_text", "text": "Option 1"},
-                "element": {"type": "plain_text_input", "action_id": "choice_input_0"}
-            },
-            {
-                "type": "input",
-                "block_id": "choice_block_1",
-                "label": {"type": "plain_text", "text": "Option 2 (optional)"},
-                "element": {"type": "plain_text_input", "action_id": "choice_input_1"}
-            },
-            {
-                "type": "actions",
-                "block_id": "add_option_section",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Add another option"},
-                        "action_id": "add_option_to_modal"
-                    }
-                ]
-            },
-            {
-                "type": "input",
-                "block_id": "settings_block",
-                "optional": True,
-                "label": {"type": "plain_text", "text": "Settings (optional)"},
-                "element": {
-                    "type": "checkboxes",
-                    "action_id": "allow_multiple_votes_checkbox",
-                    "options": [
-                        {
-                            "text": {"type": "plain_text", "text": "Allow multiple votes"},
-                            "value": "allow_multiple"
-                        }
-                    ]
-                }
-            }
-        ]
-    }
-
-    async with httpx.AsyncClient() as client:
-        await client.post("https://slack.com/api/views.open", headers=headers, json={
-            "trigger_id": trigger_id,
-            "view": initial_modal_view
-        })
-
-    return Response(status_code=200)
 
 
 async def update_slack_poll_message(poll_id: ObjectId, client: httpx.AsyncClient):
@@ -149,7 +74,7 @@ async def update_slack_poll_message(poll_id: ObjectId, client: httpx.AsyncClient
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn",
-                     "text": f"{current_emoji} *{choice_text}* | *{percentage:.0f}%* `{vote_count}`\n{mention_text}"},
+                     "text": f"{current_emoji} *{choice_text}*          `{vote_count}`   {percentage:.0f}% \n{mention_text}"},
             "accessory": {
                 "type": "button",
                 "text": {"type": "plain_text", "text": current_emoji},
@@ -240,7 +165,7 @@ async def handle_interactions(request: Request):
                 if block_id.startswith("choice_block_"):
                     # The action_id within the block holds the value
                     action_id = list(block_data.keys())[0]
-                    choice_text = block_data[action_id].get("value")
+                    choice_text = block_data[action_id]["value"]
                     if choice_text:
                         choices.append(choice_text.strip())
             return choices
@@ -306,6 +231,7 @@ async def handle_interactions(request: Request):
             new_input_block = {
                 "type": "input",
                 "block_id": f"choice_block_{choice_count}",
+                "optional": True,
                 "label": {"type": "plain_text", "text": f"Option {new_option_num}"},
                 "element": {"type": "plain_text_input", "action_id": f"choice_input_{choice_count}"}
             }
