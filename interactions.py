@@ -111,7 +111,8 @@ async def update_all_poll_messages(poll_id: ObjectId, client: httpx.AsyncClient)
 
 async def send_poll_to_channels(question, choices_data, channels, poll_id):
     """Sends the initial poll message to multiple Slack channels."""
-    headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
+    json_headers = {**headers, "Content-Type": "application/json"}
     poll_doc = polls.find_one({"_id": poll_id})
     allow_multiple_votes = poll_doc.get("allow_multiple_votes", False)
     allow_others_to_add = poll_doc.get("allow_others_to_add_options", False)
@@ -161,15 +162,25 @@ async def send_poll_to_channels(question, choices_data, channels, poll_id):
 
     async with httpx.AsyncClient() as client:
         for channel in channels:
-            r = await client.post("https://slack.com/api/chat.postMessage", headers=headers,
+            r = await client.post("https://slack.com/api/chat.postMessage", headers=json_headers,
                                   json={"channel": channel, "blocks": blocks})
             if r.status_code == 200 and r.json().get("ok"):
                 response_data = r.json()
                 ts = response_data["ts"]
                 channel_id = response_data["channel"]
+
+                # Get the permalink for the new message
+                perm_r = await client.get("https://slack.com/api/chat.getPermalink",
+                                          headers=headers,
+                                          params={"channel": channel_id, "message_ts": ts})
+
+                permalink = perm_r.json().get("permalink", "") if perm_r.status_code == 200 and perm_r.json().get(
+                    "ok") else ""
+
+                # Save the message info including the permalink
                 polls.update_one(
                     {"_id": poll_id},
-                    {"$push": {"messages": {"channel": channel_id, "ts": ts}}}
+                    {"$push": {"messages": {"channel": channel_id, "ts": ts, "permalink": permalink}}}
                 )
             else:
                 print(f"Error sending poll to channel {channel}: {r.status_code} {r.text}")
@@ -298,6 +309,15 @@ async def handle_interactions(request: Request):
         action = data["actions"][0]
         action_id = action["action_id"]
 
+        # This block is no longer needed since we are using permalinks, but we keep it for other actions
+        if action_id == "view_poll_details":
+            # This logic remains as a fallback or for other UI elements if needed
+            trigger_id = data["trigger_id"]
+            poll_id = ObjectId(action["value"])
+            poll = polls.find_one({"_id": poll_id})
+            # ... (modal opening logic from previous step)
+            return Response(status_code=200)
+
         if action_id == "open_create_poll_modal":
             trigger_id = data.get("trigger_id")
             # The channel_id from App Home interaction is the DM with the app
@@ -312,12 +332,33 @@ async def handle_interactions(request: Request):
                     "submit": {"type": "plain_text", "text": "Create"},
                     "close": {"type": "plain_text", "text": "Cancel"},
                     "blocks": [
-                        {"type": "input", "block_id": "question_block", "label": {"type": "plain_text", "text": "Poll Question"}, "element": {"type": "plain_text_input", "action_id": "question_input", "placeholder": {"type": "plain_text", "text": "What do you want to ask?"}}},
-                        {"type": "input", "block_id": "choice_block_0", "label": {"type": "plain_text", "text": "Option 1"}, "element": {"type": "plain_text_input", "action_id": "choice_input_0", "placeholder": {"type": "plain_text", "text": "Write something"}}},
-                        {"type": "input", "block_id": "choice_block_1", "optional": True, "label": {"type": "plain_text", "text": "Option 2 (optional)"}, "element": {"type": "plain_text_input", "action_id": "choice_input_1", "placeholder": {"type": "plain_text", "text": "Write something"}}},
-                        {"type": "actions", "block_id": "add_option_section", "elements": [{"type": "button", "text": {"type": "plain_text", "text": "Add another option"}, "action_id": "add_option_to_modal"}]},
-                        {"type": "input", "block_id": "settings_block", "optional": True, "label": {"type": "plain_text", "text": "Settings (optional)"}, "element": {"type": "checkboxes", "action_id": "settings_checkboxes", "options": [{"text": {"type": "plain_text", "text": "Allow multiple votes"}, "value": "allow_multiple"}, {"text": {"type": "plain_text", "text": "Allow others to add options"}, "value": "allow_others_to_add"}]}},
-                        {"type": "input", "block_id": "channel_block", "label": {"type": "plain_text", "text": "Select channel(s) to post"}, "element": {"type": "multi_conversations_select", "action_id": "channels_input", "initial_conversations": [channel_id] if channel_id else [], "placeholder": {"type": "plain_text", "text": "Select channels..."}}}
+                        {"type": "input", "block_id": "question_block",
+                         "label": {"type": "plain_text", "text": "Poll Question"},
+                         "element": {"type": "plain_text_input", "action_id": "question_input",
+                                     "placeholder": {"type": "plain_text", "text": "What do you want to ask?"}}},
+                        {"type": "input", "block_id": "choice_block_0",
+                         "label": {"type": "plain_text", "text": "Option 1"},
+                         "element": {"type": "plain_text_input", "action_id": "choice_input_0",
+                                     "placeholder": {"type": "plain_text", "text": "Write something"}}},
+                        {"type": "input", "block_id": "choice_block_1", "optional": True,
+                         "label": {"type": "plain_text", "text": "Option 2 (optional)"},
+                         "element": {"type": "plain_text_input", "action_id": "choice_input_1",
+                                     "placeholder": {"type": "plain_text", "text": "Write something"}}},
+                        {"type": "actions", "block_id": "add_option_section", "elements": [
+                            {"type": "button", "text": {"type": "plain_text", "text": "Add another option"},
+                             "action_id": "add_option_to_modal"}]},
+                        {"type": "input", "block_id": "settings_block", "optional": True,
+                         "label": {"type": "plain_text", "text": "Settings (optional)"},
+                         "element": {"type": "checkboxes", "action_id": "settings_checkboxes", "options": [
+                             {"text": {"type": "plain_text", "text": "Allow multiple votes"},
+                              "value": "allow_multiple"},
+                             {"text": {"type": "plain_text", "text": "Allow others to add options"},
+                              "value": "allow_others_to_add"}]}},
+                        {"type": "input", "block_id": "channel_block",
+                         "label": {"type": "plain_text", "text": "Select channel(s) to post"},
+                         "element": {"type": "multi_conversations_select", "action_id": "channels_input",
+                                     "initial_conversations": [channel_id] if channel_id else [],
+                                     "placeholder": {"type": "plain_text", "text": "Select channels..."}}}
                     ]
                 }
             }
