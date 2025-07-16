@@ -138,7 +138,7 @@ async def handle_slack_events(request: Request):
         if user_id:
             try:
                 # Base view structure
-                with open("views/app_home_modal.json") as f:
+                with open("views/app_home_view.json") as f:
                     home_view = json.load(f)
 
                 # Fetch recent polls for the user
