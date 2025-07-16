@@ -103,3 +103,36 @@ async def open_poll_modal(request: Request):
         await client.post("https://slack.com/api/views.open", headers=headers, json=modal)
 
     return Response(status_code=200) # Slack expects a 200 OK response quickly
+
+
+@app.post("/slack/events")
+async def handle_slack_events(request: Request):
+    """
+    Handles events from the Slack Events API, including app_home_opened.
+    """
+    payload = await request.json()
+    event_type = payload.get("type")
+
+    # Slack's one-time challenge to verify the URL
+    if event_type == "url_verification":
+        return Response(content=payload.get("challenge"))
+
+    # Handle the app_home_opened event
+    event = payload.get("event", {})
+    if event.get("type") == "app_home_opened":
+        user_id = event.get("user")
+        if user_id:
+            with open("views/app_home_modal.json") as f:
+                home_modal_template = f.read()
+
+                home_view_string = home_modal_template.replace("{{user_id}}", user_id)
+                home_view = json.loads(home_view_string)
+
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    "https://slack.com/api/views.publish",
+                    headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+                    json={"user_id": user_id, "view": home_view},
+                )
+
+    return Response(status_code=200)

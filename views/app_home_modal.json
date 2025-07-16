@@ -1,0 +1,34 @@
+{
+  "type": "home",
+  "blocks": [
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "Welcome to NPU Poll"
+      }
+    },
+    {
+      "type": "section",
+      "text": {
+        "type": "mrkdwn",
+        "text": "You can create new polls right here."
+      }
+    },
+    {
+      "type": "actions",
+      "elements": [
+        {
+          "type": "button",
+          "text": {
+            "type": "plain_text",
+            "text": "Create a New Poll",
+            "emoji": true
+          },
+          "style": "primary",
+          "action_id": "open_create_poll_modal"
+        }
+      ]
+    }
+  ]
+}
