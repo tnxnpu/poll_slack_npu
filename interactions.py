@@ -298,6 +298,34 @@ async def handle_interactions(request: Request):
         action = data["actions"][0]
         action_id = action["action_id"]
 
+        if action_id == "open_create_poll_modal":
+            trigger_id = data.get("trigger_id")
+            # The channel_id from App Home interaction is the DM with the app
+            channel_id = data.get("channel", {}).get("id")
+
+            modal = {
+                "trigger_id": trigger_id,
+                "view": {
+                    "type": "modal",
+                    "callback_id": "submit_poll_modal",
+                    "title": {"type": "plain_text", "text": "Create a Poll"},
+                    "submit": {"type": "plain_text", "text": "Create"},
+                    "close": {"type": "plain_text", "text": "Cancel"},
+                    "blocks": [
+                        {"type": "input", "block_id": "question_block", "label": {"type": "plain_text", "text": "Poll Question"}, "element": {"type": "plain_text_input", "action_id": "question_input", "placeholder": {"type": "plain_text", "text": "What do you want to ask?"}}},
+                        {"type": "input", "block_id": "choice_block_0", "label": {"type": "plain_text", "text": "Option 1"}, "element": {"type": "plain_text_input", "action_id": "choice_input_0", "placeholder": {"type": "plain_text", "text": "Write something"}}},
+                        {"type": "input", "block_id": "choice_block_1", "optional": True, "label": {"type": "plain_text", "text": "Option 2 (optional)"}, "element": {"type": "plain_text_input", "action_id": "choice_input_1", "placeholder": {"type": "plain_text", "text": "Write something"}}},
+                        {"type": "actions", "block_id": "add_option_section", "elements": [{"type": "button", "text": {"type": "plain_text", "text": "Add another option"}, "action_id": "add_option_to_modal"}]},
+                        {"type": "input", "block_id": "settings_block", "optional": True, "label": {"type": "plain_text", "text": "Settings (optional)"}, "element": {"type": "checkboxes", "action_id": "settings_checkboxes", "options": [{"text": {"type": "plain_text", "text": "Allow multiple votes"}, "value": "allow_multiple"}, {"text": {"type": "plain_text", "text": "Allow others to add options"}, "value": "allow_others_to_add"}]}},
+                        {"type": "input", "block_id": "channel_block", "label": {"type": "plain_text", "text": "Select channel(s) to post"}, "element": {"type": "multi_conversations_select", "action_id": "channels_input", "initial_conversations": [channel_id] if channel_id else [], "placeholder": {"type": "plain_text", "text": "Select channels..."}}}
+                    ]
+                }
+            }
+            headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"}
+            async with httpx.AsyncClient() as client:
+                await client.post("https://slack.com/api/views.open", headers=headers, json=modal)
+            return Response(status_code=200)
+
         if action_id == "add_option_to_modal":
             view = data["view"]
             blocks = view["blocks"]
