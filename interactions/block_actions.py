@@ -7,10 +7,8 @@ from fastapi import Response
 
 from db import polls
 from settings import SLACK_BOT_TOKEN
-from interactions.poll_helpers import EMOJI_LIST
 from view_loader import get_create_poll_modal
-# CORRECTED: Use a relative import to access poll_helpers within the same package.
-from .poll_helpers import update_all_poll_messages
+from .poll_helpers import update_all_poll_messages, EMOJI_LIST
 
 
 async def _handle_vote(data: dict) -> Response:
@@ -80,8 +78,8 @@ async def _handle_add_option_to_modal(data: dict) -> Response:
     return Response(status_code=200)
 
 
-async def _handle_delete_poll(data: dict) -> Response:
-    """Handles deleting a poll from the settings modal."""
+async def _handle_delete_poll_confirmed(data: dict) -> Response:
+    """Handles deleting a poll from the settings modal AFTER confirmation."""
     private_metadata = json.loads(data["view"]["private_metadata"])
     poll_id = ObjectId(private_metadata["poll_id"])
     user_id = data["user"]["id"]
@@ -106,6 +104,38 @@ async def _handle_delete_poll(data: dict) -> Response:
         }
         await client.post("https://slack.com/api/views.update", headers=headers,
                           json={"view_id": data["view"]["id"], "hash": data["view"]["hash"], "view": success_view})
+    return Response(status_code=200)
+
+
+async def _handle_open_delete_confirmation_modal(data: dict) -> Response:
+    """Replaces the settings modal with a dedicated delete confirmation modal."""
+    private_metadata = data["view"]["private_metadata"]  # Keep it as a string
+
+    confirm_view = {
+        "type": "modal",
+        "callback_id": "delete_poll_confirmation",  # A unique callback_id for this view
+        "private_metadata": private_metadata,
+        "title": {"type": "plain_text", "text": "Delete Poll"},
+        "submit": {"type": "plain_text", "text": "Delete", "emoji": True},
+        "close": {"type": "plain_text", "text": "Cancel"},
+        "blocks": [
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "Are you sure you want to delete this poll? This action is irreversible."
+                }
+            }
+        ]
+    }
+
+    headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"}
+    async with httpx.AsyncClient() as client:
+        await client.post(
+            "https://slack.com/api/views.update",
+            headers=headers,
+            json={"view_id": data["view"]["id"], "hash": data["view"]["hash"], "view": confirm_view}
+        )
     return Response(status_code=200)
 
 
@@ -138,8 +168,6 @@ async def _handle_open_poll_settings(data: dict) -> Response:
             "title": {"type": "plain_text", "text": "Poll Settings"},
             "blocks": [
                 {"type": "section", "text": {"type": "mrkdwn", "text": f"*Question:* {poll.get('question', 'N/A')}"}},
-                {"type": "context",
-                 "elements": [{"type": "mrkdwn", "text": f"Created by <@{poll.get('creator_id', 'N/A')}>"}]},
                 {"type": "divider"},
                 {"type": "section", "text": {"type": "mrkdwn", "text": "*Admin Controls*"}},
                 {"type": "section", "text": {"type": "mrkdwn", "text": "Edit the poll's question and options."},
@@ -147,8 +175,12 @@ async def _handle_open_poll_settings(data: dict) -> Response:
                                "action_id": "edit_poll_content"}},
                 {"type": "section",
                  "text": {"type": "mrkdwn", "text": "Permanently delete this poll from all channels."},
-                 "accessory": {"type": "button", "text": {"type": "plain_text", "text": "Delete Poll", "emoji": True},
-                               "style": "danger", "action_id": "delete_poll_from_settings"}}
+                 "accessory": {
+                     "type": "button",
+                     "text": {"type": "plain_text", "text": "Delete Poll", "emoji": True},
+                     "style": "danger",
+                     "action_id": "open_delete_confirmation_modal",  # This now opens the new modal
+                 }}
             ]
         }
 
@@ -186,7 +218,6 @@ async def _handle_edit_poll_content(data: dict) -> Response:
                       "action_id": "add_option_to_modal"}]
     })
 
-    # Add the settings checkbox for allowing others to add options
     initial_settings = []
     if poll.get("allow_others_to_add_options"):
         initial_settings.append(
@@ -313,7 +344,8 @@ async def _handle_open_add_option_modal(data: dict) -> Response:
 BLOCK_ACTION_HANDLERS = {
     "vote_for_choice": _handle_vote,
     "add_option_to_modal": _handle_add_option_to_modal,
-    "delete_poll_from_settings": _handle_delete_poll,
+    "delete_poll_from_settings": _handle_delete_poll_confirmed,  # Renamed handler
+    "open_delete_confirmation_modal": _handle_open_delete_confirmation_modal,  # New handler
     "open_poll_settings": _handle_open_poll_settings,
     "edit_poll_content": _handle_edit_poll_content,
     "view_poll_details": _handle_view_poll_details,

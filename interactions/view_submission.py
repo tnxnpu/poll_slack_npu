@@ -158,11 +158,34 @@ async def _handle_add_option(data: dict) -> Response:
     return Response(status_code=200)
 
 
+async def _handle_delete_poll_confirmed(data: dict) -> Response:
+    """Handles deleting a poll after the user confirms in the dedicated modal."""
+    private_metadata = json.loads(data["view"]["private_metadata"])
+    poll_id = ObjectId(private_metadata["poll_id"])
+    user_id = data["user"]["id"]
+    poll = polls.find_one({"_id": poll_id})
+
+    if not poll or poll.get("creator_id") != user_id:
+        return Response(status_code=403)  # Forbidden
+
+    headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
+    async with httpx.AsyncClient() as client:
+        for msg_info in poll.get("messages", []):
+            await client.post("https://slack.com/api/chat.delete", headers=headers,
+                              json={"channel": msg_info["channel"], "ts": msg_info["ts"]})
+
+    polls.delete_one({"_id": poll_id})
+
+    # Return an empty 200 OK response to close the modal.
+    return Response(status_code=200)
+
+
 # A dictionary to map callback_ids to their handler functions
 VIEW_SUBMISSION_HANDLERS = {
     "submit_poll_modal": _handle_submit_poll,
     "submit_edit_poll_modal": _handle_edit_poll,
     "submit_add_option_modal": _handle_add_option,
+    "delete_poll_confirmation": _handle_delete_poll_confirmed,
 }
 
 
