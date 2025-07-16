@@ -315,7 +315,53 @@ async def handle_interactions(request: Request):
             trigger_id = data["trigger_id"]
             poll_id = ObjectId(action["value"])
             poll = polls.find_one({"_id": poll_id})
-            # ... (modal opening logic from previous step)
+            if not poll:
+                return Response(status_code=404, content="Poll not found")
+
+                # Calculate vote counts
+            total_votes = sum(len(c.get("voters", [])) for c in poll.get("choices", []))
+            unique_voters = {v for c in poll.get("choices", []) for v in c.get("voters", [])}
+            total_respondents = len(unique_voters)
+            allow_multiple = poll.get("allow_multiple_votes", False)
+            emoji_list = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+
+            # Build blocks for the modal
+            modal_blocks = [
+                {"type": "section", "text": {"type": "mrkdwn", "text": f"*{poll.get('question')}*"}}
+            ]
+            if allow_multiple:
+                modal_blocks.append(
+                    {"type": "context", "elements": [{"type": "mrkdwn", "text": "💡 _Multiple votes are allowed_"}]})
+
+            for i, choice in enumerate(poll.get("choices", [])):
+                voters = choice.get("voters", [])
+                vote_count = len(voters)
+                percentage_base = total_votes if allow_multiple else total_respondents
+                percentage = (vote_count / percentage_base * 100) if percentage_base > 0 else 0
+                mention_text = " ".join(f"<@{uid}>" for uid in voters) if voters else "_No votes yet_"
+                emoji = emoji_list[i] if i < len(emoji_list) else "🔘"
+
+                modal_blocks.extend([
+                    {"type": "section", "text": {"type": "mrkdwn",
+                                                 "text": f"{emoji} *{choice.get('text')}* (`{vote_count}` votes | {percentage:.0f}%)"}},
+                    {"type": "context", "elements": [{"type": "mrkdwn", "text": mention_text}]}
+                ])
+
+            modal_blocks.append({"type": "divider"})
+            modal_blocks.append({"type": "context",
+                                 "elements": [{"type": "mrkdwn", "text": f"Created by <@{poll.get('creator_id')}>"}]})
+
+            # Create the modal view
+            view = {
+                "type": "modal",
+                "title": {"type": "plain_text", "text": "Poll Details"},
+                "close": {"type": "plain_text", "text": "Close"},
+                "blocks": modal_blocks
+            }
+            headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"}
+            async with httpx.AsyncClient() as client:
+                await client.post("https://slack.com/api/views.open", headers=headers,
+                                  json={"trigger_id": trigger_id, "view": view})
             return Response(status_code=200)
 
         if action_id == "open_create_poll_modal":

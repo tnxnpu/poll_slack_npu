@@ -153,19 +153,25 @@ async def handle_slack_events(request: Request):
 
                     for poll in recent_polls:
                         question = poll.get('question', 'Untitled Poll')
+                        poll_id_str = str(poll.get('_id'))
 
-                        # Get the permalink from the first message, if it exists
                         messages = poll.get("messages", [])
                         permalink = messages[0].get("permalink") if messages and messages[0].get("permalink") else "#"
 
                         poll_blocks.append({"type": "divider"})
 
-                        # Create a section with a clickable mrkdwn link for the question
+                        # Create a section with a clickable question link and a "Quick View" button
                         poll_blocks.append({
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
                                 "text": f"<{permalink}|*{question}*>"
+                            },
+                            "accessory": {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "Quick View", "emoji": True},
+                                "action_id": "view_poll_details",
+                                "value": poll_id_str
                             }
                         })
 
