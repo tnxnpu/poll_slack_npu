@@ -103,6 +103,13 @@
               "text": "Allow others to add options"
             },
             "value": "allow_others_to_add"
+          },
+          {
+            "text": {
+              "type": "plain_text",
+              "text": "tag @channel"
+            },
+            "value": "tag_channel"
           }
         ]
       }

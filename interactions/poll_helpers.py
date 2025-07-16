@@ -62,7 +62,7 @@ def build_poll_blocks(poll: dict, total_votes: int = 0, total_respondents: int =
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn",
-                     "text": f"{emoji} *{choice['text']}* `{vote_count}` {percentage:.0f}% \n{mention_text}"},
+                     "text": f"{emoji} *{choice['text']}*       `{vote_count}` {percentage:.0f}% \n{mention_text}"},
             "accessory": {"type": "button", "text": {"type": "plain_text", "text": emoji},
                           "value": str(choice["_id"]), "action_id": "vote_for_choice"}
         })

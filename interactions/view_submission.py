@@ -70,6 +70,9 @@ async def _handle_submit_poll(data: dict) -> Response:
     selected_options = view_state.get("settings_block", {}).get("settings_checkboxes", {}).get("selected_options", [])
     selected_values = {opt['value'] for opt in selected_options}
 
+    if 'tag_channel' in selected_values:
+        question += " <!channel>"
+
     choices = [{"_id": ObjectId(), "text": text, "voters": []} for text in choices_text if text]
 
     if not all([question, choices, channels]):
