@@ -1,4 +1,6 @@
-﻿# interactions.py
+﻿#For backup, not run
+
+# interactions.py
 import asyncio
 import json
 
