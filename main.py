@@ -38,7 +38,7 @@ async def open_poll_modal_from_command(request: Request):
     try:
         form = await request.form()
         trigger_id = form.get("trigger_id")
-        channel_id = form.get("channel_id") # The channel where the command was invoked
+        channel_id = form.get("channel_id")  # The channel where the command was invoked
 
         if not trigger_id:
             return Response(status_code=400, content="trigger_id is required.")
@@ -110,19 +110,25 @@ async def _publish_app_home(user_id: str):
                 {"type": "header", "text": {"type": "plain_text", "text": "Your Recent Polls"}}
             ]
 
-
             for poll in recent_polls:
                 question = poll.get('question', 'Untitled Poll')
                 poll_id_str = str(poll.get('_id'))
                 messages = poll.get("messages", [])
-                # Use the permalink for direct navigation
                 permalink = messages[0].get("permalink") if messages and messages[0].get("permalink") else "#"
+
+                # Check for <!channel> tag and format the question string accordingly
+                display_text = ""
+                if "<!channel>" in question:
+                    core_question = question.replace("<!channel>", "").rstrip()
+                    display_text = f"<{permalink}|*{core_question}*> <!channel>"
+                else:
+                    display_text = f"<{permalink}|*{question}*>"
 
                 poll_blocks.extend([
                     {"type": "divider"},
                     {
                         "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"<{permalink}|*{question}*>"},
+                        "text": {"type": "mrkdwn", "text": display_text},
                         "accessory": {
                             "type": "button",
                             "text": {"type": "plain_text", "text": "Quick View", "emoji": True},
