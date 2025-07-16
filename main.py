@@ -34,7 +34,7 @@ async def open_poll_modal(request: Request):
         "view": {
             "type": "modal",
             "callback_id": "submit_poll_modal",
-            "private_metadata": channel_id,
+            "private_metadata": "", # No longer used for channel, can be used for other things
             "title": {"type": "plain_text", "text": "Create a Poll"},
             "submit": {"type": "plain_text", "text": "Create"},
             "close": {"type": "plain_text", "text": "Cancel"},
@@ -87,6 +87,17 @@ async def open_poll_modal(request: Request):
                                 "value": "allow_others_to_add"
                             }
                         ]
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "channel_block",
+                    "label": {"type": "plain_text", "text": "Select channel to post"},
+                    "element": {
+                        "type": "conversations_select",
+                        "action_id": "channel_input",
+                        "initial_conversation": channel_id,
+                        "placeholder": {"type": "plain_text", "text": "Select a channel..."}
                     }
                 }
             ]

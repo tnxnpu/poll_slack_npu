@@ -76,7 +76,7 @@ async def update_slack_poll_message(poll_id: ObjectId, client: httpx.AsyncClient
         blocks.append({
             "type": "section",
             "text": {"type": "mrkdwn",
-                     "text": f"{current_emoji} *{choice_text}*      `{vote_count}` {percentage:.0f}%  \n{mention_text}"},
+                     "text": f"{current_emoji} *{choice_text}* `{vote_count}` {percentage:.0f}%  \n{mention_text}"},
             "accessory": {
                 "type": "button",
                 "text": {"type": "plain_text", "text": current_emoji},
@@ -198,7 +198,7 @@ async def handle_interactions(request: Request):
         if callback_id == "submit_poll_modal":
             question = view_state["question_block"]["question_input"]["value"]
             choices_text = extract_choices_from_state(view_state)
-            channel = data["view"]["private_metadata"]
+            channel = view_state["channel_block"]["channel_input"]["selected_conversation"]
 
             selected_options = view_state.get("settings_block", {}).get("settings_checkboxes", {}).get(
                 "selected_options", [])
