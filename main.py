@@ -49,14 +49,14 @@ async def open_poll_modal(request: Request):
                     "type": "input",
                     "block_id": "choice_block_0",
                     "label": {"type": "plain_text", "text": "Option 1"},
-                    "element": {"type": "plain_text_input", "action_id": "choice_input_0"}
+                    "element": {"type": "plain_text_input", "action_id": "choice_input_0", "placeholder": {"type": "plain_text", "text": "Write something"}}
                 },
                 {
                     "type": "input",
                     "block_id": "choice_block_1",
                     "optional": True,
-                    "label": {"type": "plain_text", "text": "Option 2"},
-                    "element": {"type": "plain_text_input", "action_id": "choice_input_1"}
+                    "label": {"type": "plain_text", "text": "Option 2 (optional)"},
+                    "element": {"type": "plain_text_input", "action_id": "choice_input_1", "placeholder": {"type": "plain_text", "text": "Write something"}}
                 },
                 {
                     "type": "actions",
@@ -73,10 +73,10 @@ async def open_poll_modal(request: Request):
                     "type": "input",
                     "block_id": "settings_block",
                     "optional": True,
-                    "label": {"type": "plain_text", "text": "Settings"},
+                    "label": {"type": "plain_text", "text": "Settings (optional)"},
                     "element": {
                         "type": "checkboxes",
-                        "action_id": "settings_checkboxes", # Renamed for clarity
+                        "action_id": "settings_checkboxes",
                         "options": [
                             {
                                 "text": {"type": "plain_text", "text": "Allow multiple votes"},
@@ -92,12 +92,12 @@ async def open_poll_modal(request: Request):
                 {
                     "type": "input",
                     "block_id": "channel_block",
-                    "label": {"type": "plain_text", "text": "Select channel to post"},
+                    "label": {"type": "plain_text", "text": "Select channel(s) to post"},
                     "element": {
-                        "type": "conversations_select",
-                        "action_id": "channel_input",
-                        "initial_conversation": channel_id,
-                        "placeholder": {"type": "plain_text", "text": "Select a channel..."}
+                        "type": "multi_conversations_select",
+                        "action_id": "channels_input",
+                        "initial_conversations": [channel_id] if channel_id else [],
+                        "placeholder": {"type": "plain_text", "text": "Select channels..."}
                     }
                 }
             ]
@@ -133,17 +133,22 @@ async def handle_slack_events(request: Request):
     if event.get("type") == "app_home_opened":
         user_id = event.get("user")
         if user_id:
-            with open("views/app_home_modal.json") as f:
-                home_modal_template = f.read()
+            # Assuming app_home_modal.json exists and is valid
+            try:
+                with open("views/app_home_modal.json") as f:
+                    home_modal_template = f.read()
 
-                home_view_string = home_modal_template.replace("{{user_id}}", user_id)
-                home_view = json.loads(home_view_string)
+                    home_view_string = home_modal_template.replace("{{user_id}}", user_id)
+                    home_view = json.loads(home_view_string)
 
-            async with httpx.AsyncClient() as client:
-                await client.post(
-                    "https://slack.com/api/views.publish",
-                    headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
-                    json={"user_id": user_id, "view": home_view},
-                )
+                async with httpx.AsyncClient() as client:
+                    await client.post(
+                        "https://slack.com/api/views.publish",
+                        headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+                        json={"user_id": user_id, "view": home_view},
+                    )
+            except (FileNotFoundError, json.JSONDecodeError) as e:
+                print(f"Error loading or parsing app_home_modal.json: {e}")
+
 
     return Response(status_code=200)
