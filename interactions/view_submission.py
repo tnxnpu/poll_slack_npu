@@ -16,7 +16,6 @@ async def send_poll_to_channels(question, choices_data, channels, poll_id):
     poll_doc = polls.find_one({"_id": poll_id})
     if not poll_doc: return
 
-    # We import build_poll_blocks here to avoid circular dependency issues
     from .poll_helpers import build_poll_blocks
     blocks = build_poll_blocks(poll_doc)
 
@@ -72,7 +71,7 @@ def _build_invite_required_view(not_joined_channels: list, bot_name: str = "Your
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"To post your poll, the bot must be a member of the selected channel(s) first.\n\n*Here's how:*\n1. Close this window.\n2. Go to the channel(s).\n3. Type `/invite @{bot_name}` and send.\n4. Re-open the poll creator. Your draft has been saved!"
+                    "text": f"To post your poll, the bot must be a member of the selected private channel(s) first.\n\n*Here's how:*\n1. Close this window.\n2. Go to the private channel(s).\n3. Type `/invite @{bot_name}` and send.\n4. Re-open the poll creator. Your draft has been saved!"
                 }
             }
         ]
@@ -82,11 +81,9 @@ def _build_invite_required_view(not_joined_channels: list, bot_name: str = "Your
 def _extract_choices(state: dict) -> list[str]:
     """Extracts all choice text values from the modal state."""
     choices = []
-    # Sort blocks to maintain choice order, as dictionary iteration order is not guaranteed
     sorted_blocks = sorted(state.items(), key=lambda item: item[0])
     for block_id, block_data in sorted_blocks:
         if block_id.startswith("choice_block_"):
-            # The action_id is the key inside the block_data dictionary
             action_id = next(iter(block_data))
             if choice_text := block_data[action_id].get("value"):
                 choices.append(choice_text.strip())
@@ -105,7 +102,6 @@ async def _handle_submit_poll(data: dict) -> Response:
     selected_options = view_state.get("settings_block", {}).get("settings_checkboxes", {}).get("selected_options", [])
     selected_values = {opt['value'] for opt in selected_options}
 
-    # Basic validation before checking channels
     if not all([question, choices_text, channels]):
         errors = {}
         if not question: errors["question_block"] = "A question is required."
@@ -113,12 +109,34 @@ async def _handle_submit_poll(data: dict) -> Response:
         if not channels: errors["channel_block"] = "At least one channel must be selected."
         return JSONResponse(content={"response_action": "errors", "errors": errors})
 
-    # --- Channel Membership Validation ---
-    not_joined_channels = []
+    # --- OPTIMIZED Channel Membership Validation ---
+    not_joined_private_channels = []
     bot_info = {}
     headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
+
+    async def check_channel_membership(client: httpx.AsyncClient, channel_id: str):
+        """Helper function to check membership for a single channel, returns channel_id if invite is needed."""
+        try:
+            response = await client.get("https://slack.com/api/conversations.info", headers=headers,
+                                        params={"channel": channel_id})
+            response.raise_for_status()
+            channel_data = response.json()
+
+            if channel_data.get("ok"):
+                channel_info = channel_data.get("channel", {})
+                is_private = channel_info.get("is_private") or channel_info.get("is_group")
+                is_member = channel_info.get("is_member")
+                if is_private and not is_member:
+                    return channel_id
+            else:
+                # API call failed, likely a private channel the bot can't see.
+                return channel_id
+        except Exception as e:
+            print(f"Could not get info for channel {channel_id}, assuming it requires invite. Error: {e}")
+            return channel_id
+        return None
+
     async with httpx.AsyncClient() as client:
-        # First, get the bot's own user ID to get its name later
         try:
             auth_test_res = await client.post("https://slack.com/api/auth.test", headers=headers)
             auth_test_res.raise_for_status()
@@ -126,40 +144,19 @@ async def _handle_submit_poll(data: dict) -> Response:
         except Exception as e:
             print(f"Error getting bot info: {e}")
 
-        for channel_id in channels:
-            try:
-                response = await client.get(
-                    "https://slack.com/api/conversations.info",
-                    headers=headers,
-                    params={"channel": channel_id}
-                )
-                response.raise_for_status()
-                channel_info = response.json()
-                # The bot is not a member of the channel
-                if channel_info.get("ok") and not channel_info.get("channel", {}).get("is_member"):
-                    not_joined_channels.append(channel_id)
-                # The API call itself failed, e.g. channel not found for the whole workspace
-                elif not channel_info.get("ok"):
-                    not_joined_channels.append(channel_id)
+        # Run all channel checks concurrently to avoid timeouts
+        tasks = [check_channel_membership(client, channel_id) for channel_id in channels]
+        results = await asyncio.gather(*tasks)
+        not_joined_private_channels = [res for res in results if res is not None]
 
-            except httpx.HTTPStatusError as e:
-                # This often means the bot can't even see the channel exists (e.g. private channel)
-                print(f"HTTP error checking channel info for {channel_id}: {e.response.text}")
-                not_joined_channels.append(channel_id)
-            except Exception as e:
-                print(f"An unexpected error occurred checking channel {channel_id}: {e}")
-                not_joined_channels.append(channel_id)
-
-    if not_joined_channels:
-        # Save the user's input as a draft
+    if not_joined_private_channels:
         drafts.update_one(
             {"user_id": user_id},
             {"$set": {"state": view_state}},
             upsert=True
         )
-        # Build and return the instructional view
-        bot_name = bot_info.get("user", "YourBotName")  # Fallback name
-        error_view = _build_invite_required_view(list(set(not_joined_channels)), bot_name)
+        bot_name = bot_info.get("user", "YourBotName")
+        error_view = _build_invite_required_view(list(set(not_joined_private_channels)), bot_name)
         return JSONResponse(content={"response_action": "update", "view": error_view})
 
     # --- End of Validation ---
@@ -177,7 +174,6 @@ async def _handle_submit_poll(data: dict) -> Response:
     }
     result = polls.insert_one(poll_doc)
 
-    # Clear the draft since the poll was created successfully
     drafts.delete_one({"user_id": user_id})
 
     asyncio.create_task(send_poll_to_channels(question, choices, channels, result.inserted_id))
@@ -207,11 +203,9 @@ async def _handle_edit_poll(data: dict) -> Response:
     new_choices_data = []
     for i, new_text in enumerate(new_choices_text):
         if i < len(old_choices_data):
-            # Preserve existing choice ID and voters
             new_choices_data.append(
                 {"_id": old_choices_data[i]["_id"], "text": new_text, "voters": old_choices_data[i]["voters"]})
         else:
-            # This is a brand new choice
             new_choices_data.append({"_id": ObjectId(), "text": new_text, "voters": []})
 
     polls.update_one(
@@ -246,7 +240,6 @@ async def _handle_add_option(data: dict) -> Response:
 
     poll = polls.find_one({"_id": poll_id})
     if poll:
-        # If user votes for the new option, and it's not a multi-vote poll, remove their other votes
         if vote_for_it and not poll.get("allow_multiple_votes", False):
             polls.update_one({"_id": poll_id}, {"$pull": {"choices.$[].voters": user_id}})
 
@@ -265,7 +258,7 @@ async def _handle_delete_poll_confirmed(data: dict) -> Response:
     poll = polls.find_one({"_id": poll_id})
 
     if not poll or poll.get("creator_id") != user_id:
-        return Response(status_code=403)  # Forbidden
+        return Response(status_code=403)
 
     headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
     async with httpx.AsyncClient() as client:
@@ -275,7 +268,6 @@ async def _handle_delete_poll_confirmed(data: dict) -> Response:
 
     polls.delete_one({"_id": poll_id})
 
-    # Return an empty 200 OK response to close the modal.
     return Response(status_code=200)
 
 
@@ -294,4 +286,3 @@ async def handle_view_submission(data: dict) -> Response:
     if handler := VIEW_SUBMISSION_HANDLERS.get(callback_id):
         return await handler(data)
     return Response(status_code=404, content=f"No handler for view submission '{callback_id}'")
-

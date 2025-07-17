@@ -53,7 +53,7 @@
       "optional": true,
       "label": {
         "type": "plain_text",
-        "text": "Option 2 (optional)"
+        "text": "Option 2"
       },
       "element": {
         "type": "plain_text_input",
