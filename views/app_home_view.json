@@ -22,7 +22,7 @@
           "type": "button",
           "text": {
             "type": "plain_text",
-            "text": "Create a New Poll",
+            "text": "Create a Poll",
             "emoji": true
           },
           "style": "primary",
