@@ -16,28 +16,28 @@ def get_create_poll_modal(trigger_id: str, channel_id: Optional[str] = None,
     view_payload = copy.deepcopy(view_template)
 
     if draft_state:
-        new_blocks = []
+        # --- Start of Refactored Draft Loading Logic ---
 
-        new_blocks.append({
-            "type": "context",
-            "elements": [{"type": "mrkdwn", "text": "📝 A previously saved draft has been loaded for you."}]
-        })
+        # 1. Create a fresh list of blocks, removing the default choice blocks from the template.
+        new_blocks = [
+            b for b in view_payload["blocks"]
+            if not b.get("block_id", "").startswith("choice_block_")
+        ]
 
-        question_template = next((b for b in view_template["blocks"] if b.get("block_id") == "question_block"), None)
-        if question_template:
-            new_blocks.append(question_template)
+        # 2. Find the position where the new choices should be inserted (right before the "Add another option" button).
+        insert_pos = next((i for i, b in enumerate(new_blocks) if b.get("block_id") == "add_option_section"), -1)
+        if insert_pos == -1: insert_pos = 2  # Fallback position
 
+        # 3. Create new choice blocks from the draft data and insert them.
         draft_choices = sorted(
             [(k, v) for k, v in draft_state.items() if k.startswith("choice_block_")],
             key=lambda item: int(item[0].split('_')[-1])
         )
-        for i, (block_id, block_data) in enumerate(draft_choices):
-            action_id = next(iter(block_data))
-            # Skip creating a block if the choice value is None, which happens for empty optional fields.
-            if block_data[action_id].get("value") is None:
-                continue
 
-            new_blocks.append({
+        # Insert in reverse to maintain order
+        for i, (block_id, block_data) in reversed(list(enumerate(draft_choices))):
+            action_id = next(iter(block_data))
+            new_blocks.insert(insert_pos, {
                 "type": "input",
                 "block_id": block_id,
                 "optional": i > 0,
@@ -49,13 +49,15 @@ def get_create_poll_modal(trigger_id: str, channel_id: Optional[str] = None,
                 }
             })
 
-        for block in view_template["blocks"]:
-            template_block_id = block.get("block_id", "")
-            if not template_block_id.startswith("question_block") and not template_block_id.startswith("choice_block_"):
-                new_blocks.append(block)
+        # 4. Add the context message at the top.
+        new_blocks.insert(0, {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": "📝 A previously saved draft has been loaded for you."}]
+        })
 
         view_payload["blocks"] = new_blocks
 
+        # 5. Populate all the blocks in the newly constructed view with the saved values.
         for block_id, block_data in draft_state.items():
             action_id = next(iter(block_data))
             value_dict = block_data[action_id]
@@ -75,8 +77,10 @@ def get_create_poll_modal(trigger_id: str, channel_id: Optional[str] = None,
                         element["initial_options"] = value_dict.get("selected_options", [])
 
                     break
+        # --- End of Refactored Logic ---
 
     else:
+        # This part runs if no draft is found.
         for block in view_payload.get("blocks", []):
             if block.get("block_id") == "channel_block":
                 block["element"]["initial_conversations"] = [channel_id] if channel_id else []
