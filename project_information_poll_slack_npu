@@ -1,0 +1,39 @@
+gitproject:
+https://github.com/tnxnpu/poll_slack_npu.git
+branch: main
+
+git account: tinhnx@nopowerup.com
+
+
+
+ngrok: use in development, for fake server, usin (slack required https request, ngrok can support it)
+account: tinhnx@nopowerup.com
+password: contact tinh
+https://wallaby-allowing-quickly.ngrok-free.app
+
+render.com: for run server, connect to git project, using free account -> auto turn off server after 15m from last request.
+account: tinhnx@nopowerup.com
+password: contact tinh
+https://poll-slack-npu.onrender.com
+
+uptimeRobot: using free account. Use for wakeup server -> every 10 minutes -> send request to wakeup render.com server
+account: tinhnx@nopowerup.com
+
+==> everything free
+
+
+
+Url for Slack config:
+
+Interactivity:
+https://wallaby-allowing-quickly.ngrok-free.app/slack/interactions
+https://poll-slack-npu.onrender.com/slack/interactions
+
+
+Slash command:
+https://wallaby-allowing-quickly.ngrok-free.app/slack/commands
+https://poll-slack-npu.onrender.com/slack/commands
+
+Event Subscriptions:
+https://wallaby-allowing-quickly.ngrok-free.app/slack/events
+https://poll-slack-npu.onrender.com/slack/events
