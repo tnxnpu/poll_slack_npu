@@ -1,4 +1,5 @@
 # interactions/view_submission.py
+# Final version with debugging logs removed.
 
 import asyncio
 import json
@@ -71,7 +72,7 @@ def _build_invite_required_view(not_joined_channels: list, bot_name: str = "Your
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"To post your poll, the bot must be a member of the selected private channel(s) first.\n\n*Here's how:*\n1. Close this window.\n2. Go to the private channel(s).\n3. Type `/invite @{bot_name}` and send.\n4. Re-open the poll creator. Your draft has been saved!"
+                    "text": f"To post your poll, the bot must be a member of the selected channel(s) first.\n\n*Here's how:*\n1. Close this window.\n2. Go to the channel(s).\n3. Type `/invite @{bot_name}` and send.\n4. Re-open the poll creator. Your draft has been saved!"
                 }
             }
         ]
@@ -110,7 +111,7 @@ async def _handle_submit_poll(data: dict) -> Response:
         return JSONResponse(content={"response_action": "errors", "errors": errors})
 
     # --- OPTIMIZED Channel Membership Validation ---
-    not_joined_private_channels = []
+    not_joined_channels = []
     bot_info = {}
     headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
 
@@ -124,17 +125,21 @@ async def _handle_submit_poll(data: dict) -> Response:
 
             if channel_data.get("ok"):
                 channel_info = channel_data.get("channel", {})
-                is_private = channel_info.get("is_private") or channel_info.get("is_group")
-                is_member = channel_info.get("is_member")
-                if is_private and not is_member:
+                is_member = channel_info.get("is_member", False)
+                if not is_member:
                     return channel_id
+                else:
+                    return None
             else:
-                # API call failed, likely a private channel the bot can't see.
+                error_msg = channel_data.get('error', 'unknown_error')
+                print(f"API error checking channel {channel_id}: {error_msg}. Assuming invite is required.")
                 return channel_id
-        except Exception as e:
-            print(f"Could not get info for channel {channel_id}, assuming it requires invite. Error: {e}")
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP error checking channel {channel_id}: {e.response.status_code}. Assuming invite is required.")
             return channel_id
-        return None
+        except Exception as e:
+            print(f"Generic exception checking channel {channel_id}: {e}. Assuming invite is required.")
+            return channel_id
 
     async with httpx.AsyncClient() as client:
         try:
@@ -144,19 +149,18 @@ async def _handle_submit_poll(data: dict) -> Response:
         except Exception as e:
             print(f"Error getting bot info: {e}")
 
-        # Run all channel checks concurrently to avoid timeouts
         tasks = [check_channel_membership(client, channel_id) for channel_id in channels]
         results = await asyncio.gather(*tasks)
-        not_joined_private_channels = [res for res in results if res is not None]
+        not_joined_channels = [res for res in results if res is not None]
 
-    if not_joined_private_channels:
+    if not_joined_channels:
         drafts.update_one(
             {"user_id": user_id},
             {"$set": {"state": view_state}},
             upsert=True
         )
         bot_name = bot_info.get("user", "YourBotName")
-        error_view = _build_invite_required_view(list(set(not_joined_private_channels)), bot_name)
+        error_view = _build_invite_required_view(list(set(not_joined_channels)), bot_name)
         return JSONResponse(content={"response_action": "update", "view": error_view})
 
     # --- End of Validation ---
