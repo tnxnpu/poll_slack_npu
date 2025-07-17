@@ -5,7 +5,8 @@ import json
 from bson.objectid import ObjectId
 from fastapi import Response
 
-from db import polls
+# Import 'drafts' to check for saved data
+from db import polls, drafts
 from settings import SLACK_BOT_TOKEN
 from view_loader import get_create_poll_modal
 from .poll_helpers import update_all_poll_messages, EMOJI_LIST
@@ -109,11 +110,11 @@ async def _handle_delete_poll_confirmed(data: dict) -> Response:
 
 async def _handle_open_delete_confirmation_modal(data: dict) -> Response:
     """Replaces the settings modal with a dedicated delete confirmation modal."""
-    private_metadata = data["view"]["private_metadata"]  # Keep it as a string
+    private_metadata = data["view"]["private_metadata"]
 
     confirm_view = {
         "type": "modal",
-        "callback_id": "delete_poll_confirmation",  # A unique callback_id for this view
+        "callback_id": "delete_poll_confirmation",
         "private_metadata": private_metadata,
         "title": {"type": "plain_text", "text": "Delete Poll"},
         "submit": {"type": "plain_text", "text": "Delete", "emoji": True},
@@ -179,7 +180,7 @@ async def _handle_open_poll_settings(data: dict) -> Response:
                      "type": "button",
                      "text": {"type": "plain_text", "text": "Delete Poll", "emoji": True},
                      "style": "danger",
-                     "action_id": "open_delete_confirmation_modal",  # This now opens the new modal
+                     "action_id": "open_delete_confirmation_modal",
                  }}
             ]
         }
@@ -303,8 +304,19 @@ async def _handle_view_poll_details(data: dict) -> Response:
 async def _handle_open_create_poll_modal(data: dict) -> Response:
     """Handles the 'Create a new poll' button from the App Home."""
     trigger_id = data.get("trigger_id")
+    user_id = data["user"]["id"]
+    # channel_id will be None when opened from App Home, which is expected.
     channel_id = data.get("channel", {}).get("id")
-    modal = get_create_poll_modal(trigger_id, channel_id)
+
+    # --- Draft Loading Logic ---
+    draft_state = None
+    if user_id:
+        draft_doc = drafts.find_one({"user_id": user_id})
+        if draft_doc:
+            draft_state = draft_doc.get("state")
+    # --- End of Draft Logic ---
+
+    modal = get_create_poll_modal(trigger_id, channel_id, draft_state)
     headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"}
     async with httpx.AsyncClient() as client:
         await client.post("https://slack.com/api/views.open", headers=headers, json=modal)
@@ -344,8 +356,8 @@ async def _handle_open_add_option_modal(data: dict) -> Response:
 BLOCK_ACTION_HANDLERS = {
     "vote_for_choice": _handle_vote,
     "add_option_to_modal": _handle_add_option_to_modal,
-    "delete_poll_from_settings": _handle_delete_poll_confirmed,  # Renamed handler
-    "open_delete_confirmation_modal": _handle_open_delete_confirmation_modal,  # New handler
+    "delete_poll_from_settings": _handle_delete_poll_confirmed,
+    "open_delete_confirmation_modal": _handle_open_delete_confirmation_modal,
     "open_poll_settings": _handle_open_poll_settings,
     "edit_poll_content": _handle_edit_poll_content,
     "view_poll_details": _handle_view_poll_details,
