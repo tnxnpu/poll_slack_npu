@@ -20,7 +20,7 @@ https://poll-slack-npu.onrender.com
 UptimeRobot: using free account. Use for wakeup server -> every 10 minutes -> send request to wakeup render.com server
 account: tinhnx@nopowerup.com
 
-ngrok: use in development, for fake server, usin (slack required https request, ngrok can support it)
+ngrok: use in development, for fake server (slack required https request, ngrok can support it)
 account: tinhnx@nopowerup.com
 https://wallaby-allowing-quickly.ngrok-free.app
 
