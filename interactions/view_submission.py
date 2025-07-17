@@ -71,7 +71,7 @@ async def _handle_submit_poll(data: dict) -> Response:
     selected_values = {opt['value'] for opt in selected_options}
 
     if 'tag_channel' in selected_values:
-        question = " <!channel>" + question
+        question = " <!channel> " + question
 
     choices = [{"_id": ObjectId(), "text": text, "voters": []} for text in choices_text if text]
 
