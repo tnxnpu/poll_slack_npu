@@ -8,7 +8,8 @@ from pymongo import DESCENDING
 # Import settings and database connection
 from settings import SLACK_BOT_TOKEN
 from interactions.poll_helpers import EMOJI_LIST
-from db import polls
+# Import both polls and drafts collections
+from db import polls, drafts
 
 # Import the refactored router from the interactions package
 from interactions import interactions_router
@@ -38,13 +39,22 @@ async def open_poll_modal_from_command(request: Request):
     try:
         form = await request.form()
         trigger_id = form.get("trigger_id")
-        channel_id = form.get("channel_id")  # The channel where the command was invoked
+        channel_id = form.get("channel_id")
+        user_id = form.get("user_id")  # Get the user's ID
 
         if not trigger_id:
             return Response(status_code=400, content="trigger_id is required.")
 
-        # Load the modal view from the JSON file using the helper
-        modal_view = get_create_poll_modal(trigger_id, channel_id)
+        # --- Draft Loading Logic ---
+        draft_state = None
+        if user_id:
+            draft_doc = drafts.find_one({"user_id": user_id})
+            if draft_doc:
+                draft_state = draft_doc.get("state")
+        # --- End of Draft Logic ---
+
+        # Load the modal view, potentially with draft data
+        modal_view = get_create_poll_modal(trigger_id, channel_id, draft_state)
 
         headers = {
             "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
@@ -71,7 +81,6 @@ async def open_poll_modal_from_command(request: Request):
 async def handle_slack_events(request: Request):
     """
     Handles events from the Slack Events API, such as app_home_opened.
-    This is now simplified to route events or handle URL verification.
     """
     payload = await request.json()
     event_type = payload.get("type")
@@ -92,8 +101,7 @@ async def handle_slack_events(request: Request):
 
 async def _publish_app_home(user_id: str):
     """
-    Constructs and publishes the App Home view for a given user,
-    including a dynamic list of their recent polls.
+    Constructs and publishes the App Home view for a given user.
     """
     try:
         # Base view structure from JSON file
@@ -103,7 +111,6 @@ async def _publish_app_home(user_id: str):
         # Fetch the 5 most recent polls for the user
         recent_polls = list(polls.find({"creator_id": user_id}).sort("_id", DESCENDING).limit(5))
 
-        # If polls are found, build and add the poll blocks
         if recent_polls:
             poll_blocks = [
                 {"type": "divider"},
@@ -116,13 +123,9 @@ async def _publish_app_home(user_id: str):
                 messages = poll.get("messages", [])
                 permalink = messages[0].get("permalink") if messages and messages[0].get("permalink") else "#"
 
-                # Check for <!channel> tag and format the question string accordingly
-                display_text = ""
+                display_text = f"<{permalink}|*{question.replace('<!channel>', '').strip()}*>"
                 if "<!channel>" in question:
-                    core_question = question.replace("<!channel>", "").rstrip()
-                    display_text = f"<{permalink}|*{core_question}*> <!channel>"
-                else:
-                    display_text = f"<{permalink}|*{question}*>"
+                    display_text += " <!channel>"
 
                 poll_blocks.extend([
                     {"type": "divider"},
@@ -150,14 +153,11 @@ async def _publish_app_home(user_id: str):
             home_view["blocks"].extend(poll_blocks)
 
         headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"}
-        # Publish the view to the user's App Home
         async with httpx.AsyncClient() as client:
             await client.post(
                 "https://slack.com/api/views.publish",
                 headers=headers,
                 json={"user_id": user_id, "view": home_view},
             )
-    except (FileNotFoundError, json.JSONDecodeError) as e:
-        print(f"Error publishing App Home view for user {user_id}: {e}")
     except Exception as e:
-        print(f"An unexpected error occurred in _publish_app_home: {e}")
+        print(f"Error publishing App Home view for user {user_id}: {e}")
