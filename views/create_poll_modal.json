@@ -84,7 +84,7 @@
       "optional": true,
       "label": {
         "type": "plain_text",
-        "text": "Settings (optional)"
+        "text": "Settings"
       },
       "element": {
         "type": "checkboxes",
