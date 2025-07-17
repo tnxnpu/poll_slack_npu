@@ -33,6 +33,10 @@ def get_create_poll_modal(trigger_id: str, channel_id: Optional[str] = None,
         )
         for i, (block_id, block_data) in enumerate(draft_choices):
             action_id = next(iter(block_data))
+            # Skip creating a block if the choice value is None, which happens for empty optional fields.
+            if block_data[action_id].get("value") is None:
+                continue
+
             new_blocks.append({
                 "type": "input",
                 "block_id": block_id,
