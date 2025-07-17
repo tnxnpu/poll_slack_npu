@@ -1,3 +1,5 @@
+ALL INFORMATION OF NPU POLL SLACK BOT
+
 gitproject:
 https://github.com/tnxnpu/poll_slack_npu.git
 branch: main
@@ -5,24 +7,29 @@ branch: main
 git account: tinhnx@nopowerup.com
 
 
+MongoDB: for save poll database
+account free: tinhnx@nopowerup.com
+database:tnxp
+collections: polls, drafts
+
+
+Render.com: for run server, connect to git project, using free account -> auto turn off server after 15m from last request.
+account: tinhnx@nopowerup.com
+password: contact tinh
+https://poll-slack-npu.onrender.com
+
+UptimeRobot: using free account. Use for wakeup server -> every 10 minutes -> send request to wakeup render.com server
+account: tinhnx@nopowerup.com
 
 ngrok: use in development, for fake server, usin (slack required https request, ngrok can support it)
 account: tinhnx@nopowerup.com
 password: contact tinh
 https://wallaby-allowing-quickly.ngrok-free.app
 
-render.com: for run server, connect to git project, using free account -> auto turn off server after 15m from last request.
-account: tinhnx@nopowerup.com
-password: contact tinh
-https://poll-slack-npu.onrender.com
-
-uptimeRobot: using free account. Use for wakeup server -> every 10 minutes -> send request to wakeup render.com server
-account: tinhnx@nopowerup.com
-
-==> everything free
+==> EVERYTHING IS FREEEEE
 
 
-
+Slack bot: https://api.slack.com/apps/A092W5ZP34M
 Url for Slack config:
 
 Interactivity:
