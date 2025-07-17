@@ -5,7 +5,6 @@ import json
 from bson.objectid import ObjectId
 from fastapi import Response
 
-# Import 'drafts' to check for saved data
 from db import polls, drafts
 from settings import SLACK_BOT_TOKEN
 from view_loader import get_create_poll_modal
@@ -29,14 +28,11 @@ async def _handle_vote(data: dict) -> Response:
     already_voted = polls.find_one(voter_query)
 
     if not allow_multiple:
-        # Remove any previous vote from this user in this poll
         polls.update_one({"_id": poll["_id"]}, {"$pull": {"choices.$[].voters": user_id}})
         if not already_voted:
-            # Add the new vote if they weren't already voting for this option
             polls.update_one({"_id": poll["_id"], "choices._id": selected_choice_id},
                              {"$push": {"choices.$.voters": user_id}})
     else:
-        # If multiple votes are allowed, just toggle the vote for the selected option
         if already_voted:
             polls.update_one({"_id": poll["_id"], "choices._id": selected_choice_id},
                              {"$pull": {"choices.$.voters": user_id}})
@@ -206,9 +202,14 @@ async def _handle_edit_poll_content(data: dict) -> Response:
                      "initial_value": poll.get("question", "")}}
     ]
     for i, choice in enumerate(poll.get("choices", [])):
+        label_text = f"Option {i + 1}"
+        # The 'optional' property below will add the (optional) text automatically.
+        # No need to add it to the label_text manually.
+
         edit_blocks.append({
             "type": "input", "block_id": f"choice_block_{i}",
-            "label": {"type": "plain_text", "text": f"Option {i + 1}"},
+            "optional": i > 0,
+            "label": {"type": "plain_text", "text": label_text},
             "element": {"type": "plain_text_input", "action_id": f"choice_input_{i}",
                         "initial_value": choice.get("text", "")}
         })
@@ -305,16 +306,13 @@ async def _handle_open_create_poll_modal(data: dict) -> Response:
     """Handles the 'Create a new poll' button from the App Home."""
     trigger_id = data.get("trigger_id")
     user_id = data["user"]["id"]
-    # channel_id will be None when opened from App Home, which is expected.
     channel_id = data.get("channel", {}).get("id")
 
-    # --- Draft Loading Logic ---
     draft_state = None
     if user_id:
         draft_doc = drafts.find_one({"user_id": user_id})
         if draft_doc:
             draft_state = draft_doc.get("state")
-    # --- End of Draft Logic ---
 
     modal = get_create_poll_modal(trigger_id, channel_id, draft_state)
     headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"}
